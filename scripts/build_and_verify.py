@@ -118,6 +118,8 @@ def main():
     ap.add_argument("--report", action="store_true", help="只打印进度与作业单")
     ap.add_argument("--target", type=int, default=0)
     ap.add_argument("--ledger", default="ledger.json")
+    ap.add_argument("--strict", action="store_true",
+                    help="任一闸门失败时以非 0 退出（供 run_state.py / CI 作为停止谓词使用）")
     a = ap.parse_args()
 
     cfg = CONFIG
@@ -283,6 +285,18 @@ def main():
             print("   - %s（现 %d 字，需 +%d）" % (h, n, f - n))
     elif target and total < target:
         print("\n下一批作业单：主线已达标，继续按骨架扩展新单元。")
+
+    if a.strict:
+        bad = [g for g in (g2 if g2b == PASS else FAIL, g3, g4, g5, g6,
+                           g8a if g8b == PASS else FAIL, g9, g10) if g != PASS]
+        if target and total < target:
+            print("\n[strict] 字数未达标（%d/%d）→ exit 1" % (total, target))
+            return 1
+        if bad:
+            print("\n[strict] 闸门未过 %d 项 → exit 2" % len(bad))
+            return 2
+        print("\n[strict] 全部闸门通过且字数达标 → exit 0（DONE）")
+        return 0
 
     return 0
 
