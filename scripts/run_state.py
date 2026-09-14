@@ -61,12 +61,14 @@ CN_NUMS = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6,
            "七": 7, "八": 8, "九": 9, "十": 10}
 
 DEFAULTS = {
-    "version": "9.0.0",
+    "version": "9.1.0",
     "target": 0,
     "cap": 12000,               # 模型单轮输出上限（中文字符）
     "util": 0.8,                # 利用率：单轮只按 80% 计
     "per_round": 0,             # = round(cap * util)
     "rounds_planned": 0,        # x = ceil(target / per_round)
+    "chunks_per_turn": 3,       # 一个回合里链式跑几块（受 harness 迭代上限约束）
+    "turns_needed": 0,          # ≈ ceil(rounds_planned / chunks_per_turn)
     "phase": "GENERATE",
     "mode": "RUN_TO_COMPLETION",
     "no_user_input": True,
@@ -94,7 +96,8 @@ DEFAULTS = {
 
 RESUME_LINE = (
     "继续按 LFBD v9 运行契约执行：读 run_state.json，跑 "
-    "`python scripts/run_state.py next` 看当前阶段，按作业单把本轮到上限写满，再跑 "
+    "`python scripts/run_state.py next` 看当前阶段，"
+    "本轮**链式跑满 chunks_per_turn 块**（块与块之间不要收尾、不要报告），再跑 "
     "`python scripts/run_state.py gate`；未 exit 0 不许停、不许提问、不许征求确认。"
 )
 
@@ -421,13 +424,15 @@ def next_plan(d, sc, short):
     return units, cpu, units * cpu
 
 
-def print_next_plan(d, sc, short, m=None, eff=None):
+def print_next_plan(d, sc, short, m=None, eff=None, chunks=1):
     units, cpu, planned = next_plan(d, sc, short)
     eff = eff if eff is not None else (m or {}).get("cjk", 0)
     remain = max(0, d["target"] - eff)
     rounds = -(-remain // max(1, planned)) if planned else 0
     cur = d["cursor"]
     done_rounds = len(d["history"])
+    x = max(1, d["rounds_planned"])
+    k = max(1, min(chunks, d.get("chunks_per_turn", 1)))
     print("\n下一批作业单：")
     print("  · 轮次：第 %d 轮 / 共 %d 轮（契约）" % (done_rounds + 1, d["rounds_planned"]))
     print("  · 单元数 %d 个 ｜ 每单元 ≥ %d 中文字符 ｜ 计划共 %d 字"
@@ -436,6 +441,15 @@ def print_next_plan(d, sc, short, m=None, eff=None):
           % (cur.get("episode"), cur.get("scene"),
              ("，备注：" + cur.get("note")) if cur.get("note") else ""))
     print("  · 铁令：**加长单块，不要增加块数**（每单元低于 %d 字即不合格）" % cpu)
+    if k > 1:
+        _end = done_rounds + k
+        _tag = "" if _end <= x else "（已超契约 x=%d，按契约自动续跑）" % x
+        print("  · **轮内链式续跑**：本回合连跑 %d 块（第 %d—%d 轮%s），中间**不得收尾、不得报告**"
+              % (k, done_rounds + 1, _end, _tag))
+        for i in range(k):
+            print("      %d) 第 %d 轮：%d 单元 × %d 字 = %d 字"
+                  % (i + 1, done_rounds + i + 1, units, cpu, planned))
+        print("  · 本回合合计计划 %d 字；写满后再跑 gate" % (k * planned))
     print("  · 按当前计划，还需约 %d 轮" % rounds)
     if short:
         print("  · 存量欠账：%d 个单元低于地板（前 5 个）" % len(short))
@@ -468,6 +482,9 @@ def cmd_init(a):
 
     d["per_round"] = int(round(d["cap"] * d["util"]))
     d["rounds_planned"] = int(math.ceil(d["target"] / max(1, d["per_round"])))
+    if a.chunks_per_turn:
+        d["chunks_per_turn"] = a.chunks_per_turn
+    d["turns_needed"] = int(math.ceil(d["rounds_planned"] / max(1, d["chunks_per_turn"])))
     d["phase"] = "GENERATE"
     d["mode"] = "RUN_TO_COMPLETION"
     d["no_user_input"] = True
@@ -485,8 +502,16 @@ def cmd_init(a):
     print("  ────────────────────────────────────────")
     print("  轮数 x          ceil(%d / %d) = %d 轮"
           % (d["target"], d["per_round"], d["rounds_planned"]))
+    print("  轮内链式块数 k  %d 块/回合（受 harness 迭代上限约束）" % d["chunks_per_turn"])
+    print("  ────────────────────────────────────────")
+    print("  需你接续的次数   ceil(%d / %d) = %d 次"
+          % (d["rounds_planned"], d["chunks_per_turn"], d["turns_needed"]))
+    print("                  （不链式的话是 %d 次；链式把接续次数压到约 1/k）"
+          % d["rounds_planned"])
     print("  扫描范围        %s ｜ 前缀 %r" % (d["glob"], d["prefix"]))
     print("  本轮每单元目标  %d 字" % d["target_cpu"])
+    print("  首个作业单      python scripts/run_state.py plan --chunks %d"
+          % d["chunks_per_turn"])
     print()
     print("  流程：① 跑满 %d 轮 → ② 多路核字数 → ③ 不够就补 → " % d["rounds_planned"])
     print("        ④ 够了再排查问题 → ⑤ 全过才停，否则修完重来")
@@ -617,7 +642,7 @@ def cmd_gate(a):
 def cmd_plan(a):
     d = load()
     r = evaluate(d, a.skip_g10)
-    print_next_plan(d, r["sc"], r["short"], r["m"], r["eff"])
+    print_next_plan(d, r["sc"], r["short"], r["m"], r["eff"], chunks=a.chunks)
     return 0
 
 
@@ -707,6 +732,8 @@ def cmd_where(a):
     print("模式：%s（no_user_input=%s）" % (d.get("mode"), d.get("no_user_input")))
     print("轮数契约：x = %d 轮 ｜ 每轮 %d 字（%d × %s）"
           % (d["rounds_planned"], d["per_round"], d["cap"], d["util"]))
+    print("轮内链式：k = %d 块/回合 ｜ 需接续约 %d 次"
+          % (d.get("chunks_per_turn", 1), d.get("turns_needed", 0)))
     print("阶段：%s ｜ 扫描：%s ｜ 前缀：%r" % (d["phase"], d.get("glob"), d.get("prefix")))
     print("目标：%s ｜ 地板：%s ｜ 本轮每单元目标：%s"
           % (d.get("target"), d.get("floors"), d.get("target_cpu")))
@@ -721,6 +748,8 @@ def main():
     p.add_argument("--target", type=int, required=True)
     p.add_argument("--cap", type=int, default=12000, help="模型单轮输出上限（中文字符）")
     p.add_argument("--util", type=float, default=0.8, help="利用率，默认 0.8")
+    p.add_argument("--chunks-per-turn", type=int, default=3, dest="chunks_per_turn",
+                   help="一个回合里链式跑几块（默认 3）")
     p.add_argument("--glob", action="append")
     p.add_argument("--prefix", default=None)
     p.add_argument("--floors", default="")
@@ -731,6 +760,9 @@ def main():
                      ("next", cmd_next), ("count", cmd_count)):
         p = sp.add_parser(name); p.set_defaults(f=fn)
         p.add_argument("--skip-g10", action="store_true")
+        if name == "plan":
+            p.add_argument("--chunks", type=int, default=1,
+                           help="打印 N 块的连续作业单（轮内链式续跑）")
 
     for name, fn in (("resume", cmd_resume), ("where", cmd_where)):
         p = sp.add_parser(name); p.set_defaults(f=fn)
