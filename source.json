@@ -1,10 +1,10 @@
 {
   "type": "chat",
   "name": "longform-batch-delivery",
-  "version": "8.0.0",
+  "version": "8.0.1",
   "repo": "https://github.com/keaident-su/longform-batch-delivery",
   "license": "MIT",
   "lang": ["zh-CN", "en"],
-  "whatsNew": "v8 turns \"done\" into an exit code. scripts/run_state.py gate returns 0=DONE / 1=RUNNING / 2=BLOCKED, so nothing can declare completion early. Adds a turn-end contract (every turn ends with DONE or RESUME, never a question) and a throughput escalation ladder that forces longer units instead of more units. Includes _selftest/selftest.py with 12 regression assertions.",
+  "whatsNew": "v8 turns \"done\" into an exit code. scripts/run_state.py gate returns 0=DONE / 1=RUNNING / 2=BLOCKED, so nothing can declare completion early. Adds a turn-end contract (every turn ends with DONE or RESUME, never a question) and a throughput escalation ladder that forces longer units instead of more units. Includes _selftest/selftest.py with 12 regression assertions. v8.0.1 fixes a 1024-char description limit that made Chatbox drop the skill.",
   "installedAt": "2026-09-14T08:52:02.654Z"
 }
