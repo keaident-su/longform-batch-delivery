@@ -1,25 +1,19 @@
 ---
 name: longform-batch-delivery
-version: 9.1.0
+version: 9.2.0
 description: |
-  长文本分批交付协议（LFBD）。用于任何"一次性写不完"的超长产出（十几万字的小说/剧本/报告/多卷文档）。
-  v9 核心：先把"要跑几轮"算出来，再把"完成"变成退出码——
-  轮数契约 x = 目标字数 ÷（单轮输出上限 × 0.8）；先跑满 x 轮，
-  再用多种口径核字数（源文件汉字／含全角标点／去空白／交付 docx），不够就补；
-  够了才进入排查，问题全过才允许停。
-  scripts/run_state.py 四阶段：GENERATE / AUDIT / REPAIR / DONE；
-  gate 返回 0=DONE／1=继续写／2=先修问题，非 0 一律不许停、不许提问。
-  配套轮末契约（每轮只许以 DONE 或 RESUME 结尾）与吞吐升级梯（逼单块变长而非块数变多）。
-  并把 N 次接续压成 N/k 次：一个回合内链式连跑 k 块，块与块之间不收尾。
-  触发场景：目标字数远超单轮上限；分卷/分册交付；跨多轮续写不丢进度；
-  用户抱怨"又没写够""每次都要重新说一遍要求""写完才发现差一大截"。
-  English: LFBD — batching/delivery for ultra-long outputs (100k+ CJK chars).
-  v9 pre-computes the round count x = target ÷ (per-turn cap × 0.8), then loops
-  through four phases: GENERATE / AUDIT / REPAIR / DONE. Volume is checked by
-  several methods (CJK, CJK+punctuation, non-space, built docx); if short, keep
-  writing; once met, run all gates; only if everything passes may you stop.
-  gate returns 0=DONE / 1=write more / 2=fix first — never end a turn with a question.
-  Chaining k chunks inside one turn (no wrap-up between chunks) cuts hand-offs to about 1/k.
+  长文本分批交付协议（LFBD）。用于一次性写不完的超长产出（十几万字的小说/剧本/报告）。
+  v9 核心：先把"跑几轮"算出来，再把"完成"变成退出码——
+  轮数契约 x = ceil(目标 ÷ (单轮上限 × 0.8))；先跑满 x 轮，
+  再用多种口径核字数（汉字/含全角标点/去空白/交付 docx），不够就补；
+  够了才排查（编号/时间/字段/内容一致性），问题全过才允许停。
+  scripts/run_state.py 四阶段 GENERATE/AUDIT/REPAIR/DONE；
+  gate 返回 0=DONE、1=继续写、2=先修问题——非 0 一律不许停、不许提问。
+  轮内链式续跑：块与块之间不得收尾；请用 Chatbox Work Mode（每 25 次工具调用一次 Continue）。
+  English: LFBD for ultra-long outputs. Pre-compute x = target ÷ (cap × 0.8), then loop
+  GENERATE / AUDIT / REPAIR / DONE. Check volume by several methods; if short keep writing,
+  once met run all gates, stop only if all pass. gate: 0=DONE / 1=write more / 2=fix first.
+  Chain chunks inside one turn (no wrap-up); run in Chatbox Work Mode.
 allowed-tools:
   - Read
   - Write
@@ -243,6 +237,56 @@ chunks_per_turn = k
 
 不矛盾。§1 的铁律 6 管的是**回合结束时**的结尾；本节管的是**回合进行中**的行为。
 一句话：**中间不汇报，最后才汇报；但最后那一句仍必须是 `✅ DONE` 或 `⏩ RESUME`。**
+
+---
+
+## 1.8 在 Chatbox Work Mode 下运行（v9.2：把“跑完一轮就停”根治在姿势上）
+
+### 关键事实：Chatbox 已经有产品级循环
+
+Chatbox 的 **Work Mode** 本身就是这个循环（官方文档原话）：
+
+> “It runs a loop: think about what to do, call a tool, read the tool result,
+> decide the next step — and repeat until the task is done.”
+
+所以**回合边界不是不可逾越的**——只要你还在发起工具调用，循环就不会停。
+
+那为什么会“跑完一块就停”？三个原因，全部有解：
+
+| 现象 | 真实原因 | 对策 |
+|---|---|---|
+| 写完一块就停 | 块之间**输出了一条不带工具调用的消息** → 交还控制权 | 铁律 8：块之间不得收尾；**正文一律用 `write_file` 落盘** |
+| 完全没循环 | 跑在 **Chat Mode**：不注入任何工具，循环不存在 | 长文写作**必须**在 Work Mode |
+| 每 25 步暂停 | **产品硬护栏**：每 25 次连续工具调用暂停一次 | 点一次 **Continue**；这是唯一绕不开的边界 |
+
+### 硬边界：25 步一次 Continue
+
+> “To stop the AI from drifting on long tasks, it automatically pauses after **25 consecutive tool calls**
+> so you can check it is on track, then continue or stop to adjust.” —— Chatbox 官方文档
+
+这条**不可配置**。所以别再假装“一轮跑完 17 万字”，而是把它算清楚：
+
+```
+每窗口步数        25 次工具调用
+每块约需调用      1—2 次（write_file + 校验）
+每窗口可写        约 12—25 块
+预计要点 Continue ceil(总轮数 ÷ 每窗口块数)
+```
+
+`init` 会直接打印“**预计只需点 N 次 Continue**”。
+若实测偏了，跑 `calibrate` 用真实数据重算 x 和窗口数。
+
+### 结论：能压到几次，但压不到零
+
+| 问题 | 能否修复 |
+|---|---|
+| 块之间不该停 | ✅ **能**——铁律 8（块之间不得输出消息） |
+| 不该在 Chat Mode 跑长文 | ✅ **能**——本节强制 Work Mode |
+| 每 25 步暂停 | ❌ 产品护栏，只能点 Continue |
+| 总输出量 x | ❌ 内容量，不可压缩 |
+
+> 一句话：**把你的动作从“打一段话让它继续”降级为“点一下 Continue”**，次数从 18 降到几次。
+> 想要真正的零人工，唯一的路径是把循环搬到模型外面（自己写驱动器调 API）。
 
 ---
 
@@ -504,6 +548,13 @@ python scripts/dedupe_scan.py scenes --cross-table --out g10.txt
 ---
 
 ## 13. 更新日志
+
+### v9.2.0
+- **新增 §1.8「在 Chatbox Work Mode 下运行」**：核实并引用官方文档——Work Mode 本身就是
+  “think → call tool → read result → repeat until done” 的循环，**每 25 次连续工具调用暂停一次**。
+- `init` 新增打印 **“预计只需点 N 次 Continue”**（按 `--steps-per-window` 与 `--calls-per-chunk` 估算）。
+- 新增 `calibrate` 命令：用实测 chars/块 反推真实 cap，重算 x 与窗口数。
+- 明确区分“能修的”（块之间不得收尾 / 必须 Work Mode）与“修不了的”（25 步护栏 / 总输出量 x）。
 
 ### v9.1.0
 - **新增轮内链式续跑**：`init --chunks-per-turn k`（默认 3）；`plan --chunks k` 一次给出连续 k 块作业单。
