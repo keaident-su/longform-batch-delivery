@@ -1,163 +1,142 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""ledger.py —— 长文本分批交付协议的进度账本（无第三方依赖）
-
-用法：
-  python ledger.py init   --target 170000 --budget 10000 --cursor-chapter 9 --cursor-scene 242
-  python ledger.py add    --n 1 --range "第171-200场" --added 10400 --verify PASS
-  python ledger.py report
-  python ledger.py next   --plan 2
-
-账本文件默认 ./ledger.json。所有写操作会同时刷新 LEDGER.md（人读版）。
 """
-import argparse
-import json
-import math
-import os
-from datetime import datetime
+ledger.py —— 长文本分批交付：账本初始化 / 更新 / 查询 / 算下一批
+
+零依赖。用法：
+  python scripts/ledger.py init --target 170000 --parts "上册:238" "下册:0"
+  python scripts/ledger.py update --added 11511 --blocks 28 --cursor 270
+  python scripts/ledger.py show
+  python scripts/ledger.py next --remaining-round-chars 9200
+"""
+
+import os, sys, json, argparse, datetime
 
 LEDGER = "ledger.json"
-LEDGER_MD = "LEDGER.md"
+DEFAULTS = {
+    "target": 0,
+    "unit": "cjk_chars",
+    "current_total": 0,
+    "calibrated": {"chars_per_block": 0, "chars_per_round": 9000},
+    "cursor": {"chapter": 0, "scene": 0},
+    "parts": [],
+    "floors": {"main": 700, "sub": 500},
+    "batches": [],
+    "checks": {},
+    "updated_at": "",
+}
 
 
-def _now():
-    return datetime.now().astimezone().replace(microsecond=0).isoformat()
+def load():
+    if os.path.exists(LEDGER):
+        try:
+            d = json.load(open(LEDGER, encoding="utf-8"))
+            for k, v in DEFAULTS.items():
+                d.setdefault(k, v)
+            return d
+        except Exception:
+            pass
+    return dict(DEFAULTS)
 
 
-def load(path=LEDGER):
-    if not os.path.exists(path):
-        return {
-            "target": 0, "unit": "cjk_chars", "per_batch_budget": 10000,
-            "batches_planned": 0, "batches_done": 0, "current_total": 0,
-            "cursor": {"chapter": 0, "scene": 0},
-            "updated_at": _now(), "batches": [], "checks": {},
-        }
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
-
-
-def save(d, path=LEDGER):
-    d["updated_at"] = _now()
-    d["batches_done"] = len(d.get("batches", []))
-    d["current_total"] = sum(b.get("added", 0) for b in d.get("batches", []))
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(d, f, ensure_ascii=False, indent=2)
-    with open(LEDGER_MD, "w", encoding="utf-8") as f:
-        f.write(render_md(d))
-
-
-def render_md(d):
-    tgt = d.get("target", 0)
-    cur = d.get("current_total", 0)
-    left = max(tgt - cur, 0)
-    pct = (cur / tgt * 100) if tgt else 0
-    lines = []
-    lines.append("# LEDGER —— 长文本交付进度账本\n")
-    lines.append("| 项目 | 值 |\n|---|---|")
-    lines.append("| 目标字数 | %d |" % tgt)
-    lines.append("| 当前字数 | %d |" % cur)
-    lines.append("| 还差 | **%d** |" % left)
-    lines.append("| 完成度 | %.1f%% |" % pct)
-    lines.append("| 单批预算 | %d |" % d.get("per_batch_budget", 0))
-    lines.append("| 计划批数 / 已完成 | %d / %d |" % (d.get("batches_planned", 0), d.get("batches_done", 0)))
-    c = d.get("cursor", {})
-    lines.append("| 续写游标 | 第%s章 / 第%s单元 |" % (c.get("chapter", 0), c.get("scene", 0)))
-    lines.append("| 更新时间 | %s |" % d.get("updated_at", ""))
-    lines.append("\n## 分批记录\n")
-    lines.append("| 批 | 范围 | 本批增量 | 累计 | 校验 |\n|---|---|---|---|---|")
-    acc = 0
-    for b in d.get("batches", []):
-        acc += b.get("added", 0)
-        lines.append("| %s | %s | +%d | %d | %s |" % (
-            b.get("n"), b.get("range", ""), b.get("added", 0), acc, b.get("verify", "-")))
-    lines.append("\n## 校验闸门\n")
-    for k, v in (d.get("checks") or {}).items():
-        lines.append("- %s: %s" % (k, v))
-    lines.append("\n> 下一批：读 `cursor`，按单批预算写，写完跑 build_and_verify，再 `ledger.py add`。\n")
-    return "\n".join(lines)
+def save(d):
+    d["updated_at"] = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    d["remaining"] = max(0, d.get("target", 0) - d.get("current_total", 0))
+    t = d.get("target", 0) or 1
+    d["progress_pct"] = round(100.0 * d.get("current_total", 0) / t, 1)
+    json.dump(d, open(LEDGER, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+    # 同步人读版
+    md = [
+        "# LEDGER",
+        "",
+        "| 项目 | 值 |",
+        "|---|---|",
+        "| 目标 | %d |" % d["target"],
+        "| 当前 | %d |" % d["current_total"],
+        "| 还差 | %d |" % d["remaining"],
+        "| 完成度 | %.1f%% |" % d["progress_pct"],
+        "| 实测吞吐 | %d 字/块 ｜ %d 字/轮 |" % (
+            d["calibrated"].get("chars_per_block", 0),
+            d["calibrated"].get("chars_per_round", 0)),
+        "| 游标 | 章 %s ｜ 场 %s |" % (d["cursor"].get("chapter"), d["cursor"].get("scene")),
+        "| 更新时间 | %s |" % d["updated_at"],
+        "",
+        "## 分批记录",
+        "",
+        "| 批 | 范围 | 新增 | 累计 | 校验 |",
+        "|---|---|---|---|---|",
+    ]
+    for b in d["batches"]:
+        md.append("| %s | %s | +%s | %s | %s |" % (
+            b.get("n"), b.get("range"), b.get("added"), b.get("total"), b.get("verify")))
+    open("LEDGER.md", "w", encoding="utf-8").write("\n".join(md) + "\n")
 
 
 def cmd_init(a):
-    d = {
-        "target": a.target, "unit": a.unit, "per_batch_budget": a.budget,
-        "batches_planned": math.ceil(a.target / a.budget) if a.budget else 0,
-        "batches_done": 0, "current_total": a.start,
-        "cursor": {"chapter": a.cursor_chapter, "scene": a.cursor_scene},
-        "updated_at": _now(), "batches": [], "checks": {},
-    }
-    save(d)
-    print("已初始化账本：目标 %d，单批预算 %d，计划 %d 批，起点 %d"
-          % (d["target"], d["per_batch_budget"], d["batches_planned"], d["current_total"]))
-
-
-def cmd_add(a):
     d = load()
-    d.setdefault("batches", []).append({
-        "n": a.n, "range": a.range, "added": a.added, "verify": a.verify, "at": _now(),
+    d["target"] = a.target
+    d["parts"] = []
+    for p in (a.parts or []):
+        name, _, mx = p.partition(":")
+        d["parts"].append({"name": name, "max_id": int(mx) if mx else 0})
+    save(d)
+    print("已初始化账本：目标 %d" % a.target)
+
+
+def cmd_update(a):
+    d = load()
+    cur = d["current_total"] + a.added
+    cpb = int(a.added / a.blocks) if a.blocks else d["calibrated"].get("chars_per_block", 0)
+    d["current_total"] = cur
+    d["calibrated"] = {"chars_per_block": cpb, "chars_per_round": a.added}
+    if a.cursor:
+        d["cursor"]["scene"] = a.cursor
+    d["batches"].append({
+        "n": len(d["batches"]) + 1,
+        "range": a.range or "",
+        "added": a.added,
+        "total": cur,
+        "verify": a.verify or "PASS",
     })
-    if a.cursor_chapter is not None:
-        d.setdefault("cursor", {})["chapter"] = a.cursor_chapter
-    if a.cursor_scene is not None:
-        d.setdefault("cursor", {})["scene"] = a.cursor_scene
-    if a.set_check:
-        for kv in a.set_check:
-            k, _, v = kv.partition("=")
-            d.setdefault("checks", {})[k] = v
     save(d)
-    cmd_report(a)
+    remaining = d["remaining"]
+    print("当前 %d ｜ 还差 %d ｜ 完成度 %.1f%% ｜ 实测 %d 字/块" % (
+        cur, remaining, d["progress_pct"], cpb))
+    if a.added:
+        print("按本批吞吐，还需约 %d 轮" % (-(-remaining // a.added)))
 
 
-def cmd_report(a=None):
+def cmd_show(a):
     d = load()
-    tgt, cur = d.get("target", 0), d.get("current_total", 0)
-    left = max(tgt - cur, 0)
-    print("目标 %d ｜ 当前 %d ｜ 还差 %d（%.1f%%）｜ 已完成 %d/%d 批" % (
-        tgt, cur, left, (cur / tgt * 100) if tgt else 0,
-        d.get("batches_done", 0), d.get("batches_planned", 0)))
+    print("目标 %d ｜ 当前 %d ｜ 还差 %d（%.1f%%）" % (
+        d["target"], d["current_total"], d["remaining"], d["progress_pct"]))
+    print("实测吞吐：%d 字/块 ｜ %d 字/轮" % (
+        d["calibrated"].get("chars_per_block", 0),
+        d["calibrated"].get("chars_per_round", 0)))
+    print("游标：场 %s ｜ 批次数 %d" % (d["cursor"].get("scene"), len(d["batches"])))
 
 
 def cmd_next(a):
     d = load()
-    tgt, cur = d.get("target", 0), d.get("current_total", 0)
-    left = max(tgt - cur, 0)
-    budget = d.get("per_batch_budget", 10000)
-    n_done = d.get("batches_done", 0)
-    print("下一批：第 %d 批，计划 %d 字，还差 %d 字，预计还需 %d 批"
-          % (n_done + 1, min(budget, left), left, math.ceil(left / budget) if budget else 0))
-    print("游标：", json.dumps(d.get("cursor", {}), ensure_ascii=False))
+    r = max(1, a.remaining_round_chars or d["calibrated"].get("chars_per_round", 9000))
+    print("下一批：范围由游标（场 %s）向后，计划字数 %d" % (d["cursor"].get("scene"), r))
+    print("剩余轮数 ≈ %d" % (-(-d["remaining"] // r)))
 
 
 def main():
-    p = argparse.ArgumentParser(description="长文本分批交付账本")
-    sub = p.add_subparsers(dest="cmd", required=True)
-
-    pi = sub.add_parser("init")
-    pi.add_argument("--target", type=int, required=True)
-    pi.add_argument("--budget", type=int, default=10000)
-    pi.add_argument("--start", type=int, default=0)
-    pi.add_argument("--unit", default="cjk_chars")
-    pi.add_argument("--cursor-chapter", type=int, default=0)
-    pi.add_argument("--cursor-scene", type=int, default=0)
-    pi.set_defaults(func=cmd_init)
-
-    pa = sub.add_parser("add")
-    pa.add_argument("--n", type=int, required=True)
-    pa.add_argument("--range", required=True)
-    pa.add_argument("--added", type=int, required=True)
-    pa.add_argument("--verify", default="PASS")
-    pa.add_argument("--cursor-chapter", type=int, default=None)
-    pa.add_argument("--cursor-scene", type=int, default=None)
-    pa.add_argument("--set-check", action="append", default=[])
-    pa.set_defaults(func=cmd_add)
-
-    sub.add_parser("report").set_defaults(func=cmd_report)
-
-    pn = sub.add_parser("next")
-    pn.add_argument("--plan", type=int, default=1)
-    pn.set_defaults(func=cmd_next)
-
-    a = p.parse_args()
-    a.func(a)
+    ap = argparse.ArgumentParser()
+    sp = ap.add_subparsers(dest="cmd", required=True)
+    p = sp.add_parser("init"); p.add_argument("--target", type=int, required=True)
+    p.add_argument("--parts", nargs="*"); p.set_defaults(f=cmd_init)
+    p = sp.add_parser("update"); p.add_argument("--added", type=int, required=True)
+    p.add_argument("--blocks", type=int, default=0); p.add_argument("--cursor", type=int, default=0)
+    p.add_argument("--range", default=""); p.add_argument("--verify", default="")
+    p.set_defaults(f=cmd_update)
+    p = sp.add_parser("show"); p.set_defaults(f=cmd_show)
+    p = sp.add_parser("next"); p.add_argument("--remaining-round-chars", type=int, default=0)
+    p.set_defaults(f=cmd_next)
+    a = ap.parse_args()
+    a.f(a)
 
 
 if __name__ == "__main__":
