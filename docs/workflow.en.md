@@ -78,6 +78,17 @@ cannot be mistaken for done.
 
 ---
 
+## 0.7 How to run it: Work Mode required (v9.2)
+
+Chatbox's Work Mode is itself a loop (think → call tool → read result → repeat until done).
+Its only hard boundary is a pause **every 25 consecutive tool calls**.
+
+- Long-form writing **must** run in Work Mode; Chat Mode injects no tools, so there is no loop.
+- Write all prose to disk with `write_file`; **emit no message between chunks**.
+- `init` prints "expected Continue clicks: N"; if reality differs, run `calibrate`.
+
+---
+
 ## 1. Skeleton first
 
 Write only the skeleton: one line per unit — `ID + one-sentence anchor + planned chars`. Get it confirmed, then fill prose only. **Never change IDs or order while filling.**
