@@ -81,6 +81,9 @@ def main():
     expect("x = ceil(20000/4000) = 5", "= 5 轮" in out, "实际: %s" % (line[0] if line else "?"))
     expect("每轮计划产出 = 4000", "4000" in out)
     expect("算出需接续次数 ceil(5/3)=2", "= 2 次" in out, "实际: %s" % [l for l in out.splitlines() if "接续的次数" in l])
+    expect("算出 Work Mode 窗口：每 25 步暂停", "25 次工具调用暂停一次" in out)
+    expect("给出预计 Continue 次数", "Continue" in out)
+    expect("给出 calibrate 提示", "calibrate" in out or "首个作业单" in out)
 
     # 换个目标，方便后续跑到 DONE
     rc, out = run("init", "--target", "3000", "--cap", "5000", "--util", "0.8",
