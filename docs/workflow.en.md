@@ -1,132 +1,64 @@
-# Full Workflow (English)
+# Workflow (English)
 
-This is the operating manual for [SKILL.md](../SKILL.md).
+## 0. Kick-off: three things
 
----
+1. **Size it**: `N0 = ceil(target ÷ 9000)`; tell the user N0.
+2. **Freeze a batch plan**: table of `batch / range / planned chars / cumulative`.
+3. **Create the ledger**: `python scripts/ledger.py init --target 170000 --parts "vol1:238" "vol2:0"`
 
-## Step 0 — Decide whether batching is required
+## 1. Skeleton first
 
-```
-batching required  ⟺  target size > safe single-turn output (8,000–10,000 CJK chars)
-```
+Write only the skeleton: one line per unit — `ID + one-sentence anchor + planned chars`. Get it confirmed, then fill prose only. **Never change IDs or order while filling.**
 
-As soon as batching is required, stop "writing while thinking" and follow the loop below.
+## 2. Single-writer lock
 
----
+Drop `RUN.lock` at the project root:
 
-## Step 1 — Measure and state the round count
-
-```
-P = safe single-turn output     (conservative 8,000; generous 10,000)
-N = ceil(target / P)
+```json
+{ "run_id": "2026-09-14T18:20", "file_prefixes": ["act4_"], "owner": "session-A" }
 ```
 
-Then, **in your very first reply**, state:
+The build only scans `file_prefixes`; any other file with a similar name is treated as pollution and **G8 fails**.
 
-- target size
-- per-batch budget P
-- planned number of batches N
-- the range each batch covers
-- one explicit sentence: "this takes N rounds, not one"
-
-> The point: surface the round count immediately, so the user never feels a sudden shortfall later.
-
----
-
-## Step 2 — Create the ledger
-
-```bash
-python scripts/ledger.py init --target 170000 --budget 10000
-```
-
-This produces `ledger.json` (machine-readable) and `LEDGER.md` (human-readable).
-The two fields that matter most:
-
-- `current_total` — cumulative characters so far
-- `cursor` — where the next batch starts
-
----
-
-## Step 3 — Skeleton first
-
-**Outline before prose.** Each unit in the skeleton carries only three things:
+## 3. Per-batch SOP
 
 ```
-Scene 171
-anchor: <one sentence>
-planned chars: 900
+1. Read LEDGER.md → take cursor + next range
+2. Write this batch only (target = last measured chars/round)
+3. Dump to disk (numbered filenames)
+4. python scripts/build_and_verify.py --target 170000
+5. Short → top up INSIDE this batch; never defer the gap
+6. python scripts/ledger.py update --added <n> --blocks <k> --cursor <last id>
+7. Report (fixed table)
+8. If the user said "write it all" → go to step 1 and keep going until the turn cap
 ```
 
-Deliver the skeleton once for confirmation. It is cheap and prevents all downstream rework.
-**Lock two things**: unit numbering and time order. Every later batch must stay inside them.
-
----
-
-## Step 4 — The per-batch loop
+## 4. Report template
 
 ```
-┌─ read LEDGER.md, confirm this batch's range
-│
-├─ write prose (target = per_batch_budget; prefer under, never over)
-│     └─ dump to source files: src/part_01.txt, src/part_02.txt ...
-│
-├─ audit: python scripts/build_and_verify.py --src "src/*.txt" ...
-│
-├─ register: python scripts/ledger.py add --n K --range "..." --added <chars> --verify PASS
-│
-├─ report (fixed template below)
-│
-└─ stop. wait for "continue".
-```
-
-**Fixed report template:**
-
-```
-## Batch K delivered
-| | previous | this batch | delta |
+## Batch N delivered
+| | prev | now | delta |
 |---|---|---|---|
+| vol1 | … | … | … |
+| vol2 | … | … | … |
 | total | … | … | … |
 
-target X | current Y | remaining Z (P% done)
-added: <what this batch contained>
-checks: G1✓ G2✓ G3✓ G4✓ G5✓ G6✓ G7✓
-next batch: <range + planned chars>
+Target X | Current Y | Remaining Z (P%)
+Measured: a chars/block | b chars/round | ~r rounds left
+
+Added: <what this batch covered>
+Gates: G1✓ … G9✓
+Next: <range + planned chars>
 ```
 
----
+## 5. "Many blocks, little volume"
 
-## Step 5 — Resume
+Look at the G9 short-list. **Lengthen blocks; do not add more blocks.** A 300-char stub and an 800-char unit cost about the same to write, but only the latter is real output.
 
-When the user says "continue":
+## 6. "Duplicate IDs appeared"
 
-1. `python scripts/ledger.py next` → get the next range and budget;
-2. write it — **do not re-ask for requirements**;
-3. go back to Step 4.
+G8 fails first. **Do not auto-merge.** Decide by hand which file survives, delete the other, rebuild.
 
-Because the ledger is on disk, this survives new sessions, context compression, and multi-day gaps.
+## 7. Resuming in a new session
 
----
-
-## The gates
-
-| Gate | Checks | On failure |
-|---|---|---|
-| G1 | char count grows monotonically, on target | fill the gap now, not next batch |
-| G2 | unit numbering continuous; sub-units follow their parent | reorder + global rewrite |
-| G3 | timestamps strictly increasing | adjust timestamps |
-| G4 | required fields present | fill them |
-| G5 | volume/episode/chapter titles complete | add them |
-| G6 | degradation (fragmented clauses / blank-line padding / high similarity) | rewrite |
-| G7 | deliverable opens in target software | regenerate |
-
-`build_and_verify.py` covers G2–G6; G1 comes from the ledger; G7 is verified by the target app.
-
----
-
-## Common pitfalls
-
-1. **Editing already-verified chapters inside a new batch** → invalidates the baseline. Make it a separate batch and re-run everything.
-2. **Pasting prose into chat** → burns context and loses content. Always dump to disk.
-3. **Padding with "supplementary scenes"** → if the main line doesn't advance, it's filler. Supplements must add other viewpoints, causality, or interiority.
-4. **Keeping progress only in the conversation** → resets on a new session. Persist it.
-5. **Reporting a shortfall only at the end** → the worst outcome for the user. Report every batch; keep the gap visible.
+Read `LEDGER.md` / `ledger.json`, take the cursor, compute the range from measured throughput, and write. **Do not re-ask requirements.**
