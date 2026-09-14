@@ -17,17 +17,19 @@ import re
 import sys
 
 DESC = """  长文本分批交付协议（LFBD）。用于一次性写不完的超长产出（十几万字的小说/剧本/报告）。
-  v9 核心：先把"跑几轮"算出来，再把"完成"变成退出码——
+  v10 核心：先把“跑几轮”算出来，再把“完成”变成退出码——
   轮数契约 x = ceil(目标 ÷ (单轮上限 × 0.8))；先跑满 x 轮，
   再用多种口径核字数（汉字/含全角标点/去空白/交付 docx），不够就补；
   够了才排查（编号/时间/字段/内容一致性），问题全过才允许停。
   scripts/run_state.py 四阶段 GENERATE/AUDIT/REPAIR/DONE；
   gate 返回 0=DONE、1=继续写、2=先修问题——非 0 一律不许停、不许提问。
-  轮内链式续跑：块与块之间不得收尾；请用 Chatbox Work Mode（每 25 次工具调用一次 Continue）。
+  回合只在输出无工具调用的消息时结束，所以回合内不得收尾；
+  一回合链式连跑 k 块，把 N 次接续压成 N/k 次；密度优先（汉字/段 ≥ 120）。
   English: LFBD for ultra-long outputs. Pre-compute x = target ÷ (cap × 0.8), then loop
   GENERATE / AUDIT / REPAIR / DONE. Check volume by several methods; if short keep writing,
   once met run all gates, stop only if all pass. gate: 0=DONE / 1=write more / 2=fix first.
-  Chain chunks inside one turn (no wrap-up); run in Chatbox Work Mode."""
+  Never wrap up mid-turn (a turn ends only when a message has no tool call); chain k chunks
+  per turn; density metrics included."""
 
 LIMIT = 1024
 SAFE = 950
