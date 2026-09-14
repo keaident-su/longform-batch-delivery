@@ -6,6 +6,40 @@
 2. **写死分批计划**：出一张"批次 / 范围 / 计划字数 / 累计"的表。
 3. **建账本**：`python scripts/ledger.py init --target 170000 --parts "上册:238" "下册:0"`
 
+## 0.5 停止谓词与轮末契约（v8 必读，优先级高于本文其余部分）
+
+### 停止谓词：唯一合法的"完成"判据
+
+```bash
+python scripts/run_state.py gate
+```
+
+| 退出码 | 状态 | 该做什么 |
+|---|---|---|
+| **0** | `DONE` | 字数达标 + 闸门全过 + 交付物在 → **可以停**，可以写"完成" |
+| **1** | `RUNNING` | 字数没到 → **接着写**，禁止写"完成"、禁止提问 |
+| **2** | `BLOCKED` | 有必修复项 → **修完接着跑**，不是停下来问 |
+
+### 轮末契约：每轮结尾二选一
+
+- `✅ DONE`（仅当 `gate` 退出码为 0）
+- `⏩ RESUME` + `run_state.py resume` 打印的原文（其余一切情况）
+
+禁止出现：`要不要…`／`需要我继续吗？`／`如果你想…回我一句'继续'`。
+
+### 一轮的标准动作
+
+```bash
+python scripts/run_state.py where    # 换会话先看清当前口径
+python scripts/run_state.py plan     # 作业单：N 个单元 × 每单元至少 M 字
+#   ……写正文，落盘（正文不进聊天）……
+python scripts/run_state.py tick --added 9200 --units 5 --cursor 214   # 自动执行吞吐升级梯
+python scripts/run_state.py gate     # 看退出码决定结尾
+python scripts/run_state.py resume   # 需要续跑时输出那一行
+```
+
+---
+
 ## 1. 骨架先行
 
 先只写骨架：每个场/章一行，`编号 + 一句锚点 + 计划字数`，不写正文。骨架先交付确认，之后只做"填肉"。
@@ -31,7 +65,8 @@
 5. 字数不够 → 本批内补写，不许把差额留到下一批
 6. python scripts/ledger.py update --added <本批新增> --blocks <本批块数> --cursor <最新编号>
 7. 汇报（固定表）
-8. 用户此前说过"全部写完" → 回到第 1 步继续，直到本轮上限
+8. python scripts/run_state.py gate
+9. 退出码 0 → 结尾写 ✅ DONE；否则 → 回到第 1 步继续，结尾写 ⏩ RESUME
 ```
 
 ## 4. 汇报模板
@@ -49,6 +84,7 @@
 
 新增：<这批写了什么>
 校验：G1✓ … G10✓
+结尾：✅ DONE（仅 gate exit 0）或 ⏩ RESUME（其余一切情况）
 下一批：<范围 + 计划字数>
 ```
 
@@ -85,4 +121,4 @@ G8 会先失败。此时**不要自动合并**，人工决定留哪一份，删�
 
 ## 7. 换会话续写
 
-只读 `LEDGER.md` / `ledger.json`，取游标，用实测吞吐算范围，直接写。**不重问需求。**
+先跑 `python scripts/run_state.py where` 与 `plan`，读 `run_state.json` / `LEDGER.md`，取游标，用实测吞吐算范围，直接写。**不重问需求。**
