@@ -3,29 +3,18 @@ name: longform-batch-delivery
 version: 8.0.0
 description: |
   长文本分批交付协议（LFBD）。用于任何"一次性写不完"的超长产出（十几万字的小说/剧本/报告/多卷文档）。
-  v8 解决前几版最致命的漏洞：**"完成"没有强制力**。v5–v7 全都在教"怎么写好"，
-  却没有任何机制能**拒绝**模型提前宣布完成——真实事故：目标 170,000 字，写到 27,822 字（16.4%）
-  就"交付"，末尾还附一句"要不要先出上册，回我一句"（变相的停下提问）。
-  v8 把"完成"变成一个**退出码**：scripts/run_state.py gate，exit 0 才是 DONE，
-  exit 1 = 继续写，exit 2 = 先修问题再继续；并规定每轮只许以 ✅DONE 或 ⏩RESUME 结尾，
-  禁止任何提问/征询/提议。另加"吞吐升级梯"：强制单块变长而不是块数变多。
-  English: v8 turns "done" into an exit code (`run_state.py gate`): 0=DONE, 1=keep writing,
-  2=fix first. Every turn must end with either a DONE certificate or a RESUME line — never a question.
-  Plus a throughput escalation ladder that forces longer units instead of more units.
-  v6 解决上一版最致命的三个缺口：①吞吐标定（不估"每轮一万字"，而是先测真实产出再排期）；
-  ②单元字数地板＋自动补写清单（防止用大量短"补充场"堆量、主线却不推进）；
-  ③单写者锁＋重号检测（防止多轮/并行运行互相污染，出现重复编号）。
-  触发场景：目标字数 > 单轮安全产出（约 8,000–12,000 中文字符）；需要分卷/分册交付；
-  需要跨多轮续写且不能丢进度；用户抱怨"又没写够""每次都要重新说一遍要求""写完才发现差一大截"。
-  v7 补上 v6 最致命的漏洞：**内容级**的一致性。v6 只保证编号/时间/字段/字数都对，
-  所以当底稿来自"另一路运行"或更早批次、后来者往同一场次下面追加补充场时，
-  会出现"编号全对、内容却把主场次事件换词重写一遍"或"同场各块事实互相打架"(人数/道具/来因)。
-  v7 新增 G10 内容重复/事实冲突闸门与 scripts/dedupe_scan.py（含逐场对照表）。
-  English: A batching/delivery protocol for ultra-long outputs (100k+ Chinese chars, multi-volume docs).
-  v6 adds throughput calibration, per-unit character floors with an auto top-up worklist,
-  and a single-writer lock with duplicate-ID detection. v7 adds content-level gates (G10):
-  verbatim-duplicate detection, in-scene fact-conflict detection, "same event re-narrated"
-  detection, and a per-scene cross-table for semantic review.
+  v8 核心：把"完成"变成退出码——scripts/run_state.py gate 返回 0=DONE／1=继续写／2=先修问题，
+  非 0 一律不许停、不许写"完成"；配合轮末契约（每轮只许以 DONE 或 RESUME 结尾，禁止任何提问）
+  与吞吐升级梯（强制单块变长，而非块数变多）。
+  v6/v7 能力全部保留：吞吐标定、单元字数地板、单写者锁、G10 内容一致性闸门。
+  触发场景：目标字数远超单轮上限（约 8,000–12,000 中文字符）；分卷/分册交付；跨多轮续写不丢进度；
+  用户抱怨"又没写够""每次都要重新说一遍要求""写完才发现差一大截"。
+  English: LFBD — a batching/delivery protocol for ultra-long outputs (100k+ CJK chars)
+  that cannot be produced in one response. v8 turns "done" into an exit code:
+  run_state.py gate -> 0=DONE / 1=keep writing / 2=fix first; non-zero means you may not stop
+  and may not claim completion. Adds a turn-end contract (every turn ends with a DONE
+  certificate or a RESUME line, never a question) and a throughput escalation ladder.
+  Keeps throughput calibration, per-unit character floors, single-writer lock and G10.
 allowed-tools:
   - Read
   - Write
