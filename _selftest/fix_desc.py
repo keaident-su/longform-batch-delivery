@@ -1,32 +1,37 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-fix_desc.py —— 把 SKILL.md 的 frontmatter description 压回 1024 字符以内
+fix_desc.py —— 校正 SKILL.md 的 frontmatter description
 
-背景：Chatbox 的 skills:parser 有一条硬限制——
+为什么存在：Chatbox 的 skills:parser 有硬限制——
     [warn] [skills:parser] Skill file description exceeds 1024 characters
-超限后技能会被摘出 enabledSkillNames，表现为"技能不见了"。
-v8 把 description 写成 1341 字符，触发了这条限制。
+超过 1024 字符后技能会被摘出 enabledSkillNames，表现为"技能从列表里消失了"。
+本脚本负责把 description 换成标准文本并**当场校验长度**。
 
-本脚本只改 frontmatter 里的 description，正文一字不动。
+用法：  python _selftest/fix_desc.py <SKILL.md 路径>
 """
 import io
 import re
 import sys
 
 DESC = """  长文本分批交付协议（LFBD）。用于任何"一次性写不完"的超长产出（十几万字的小说/剧本/报告/多卷文档）。
-  v8 核心：把"完成"变成退出码——scripts/run_state.py gate 返回 0=DONE／1=继续写／2=先修问题，
-  非 0 一律不许停、不许写"完成"；配合轮末契约（每轮只许以 DONE 或 RESUME 结尾，禁止任何提问）
-  与吞吐升级梯（强制单块变长，而非块数变多）。
-  v6/v7 能力全部保留：吞吐标定、单元字数地板、单写者锁、G10 内容一致性闸门。
-  触发场景：目标字数远超单轮上限（约 8,000–12,000 中文字符）；分卷/分册交付；跨多轮续写不丢进度；
+  v9 核心：先把"要跑几轮"算出来，再把"完成"变成退出码——
+  轮数契约 x = 目标字数 ÷（单轮输出上限 × 0.8）；先跑满 x 轮，
+  再用多种口径核字数（源文件汉字／含全角标点／去空白／交付 docx），不够就补；
+  够了才进入排查，问题全过才允许停。
+  scripts/run_state.py 四阶段：GENERATE / AUDIT / REPAIR / DONE；
+  gate 返回 0=DONE／1=继续写／2=先修问题，非 0 一律不许停、不许提问。
+  配套轮末契约（每轮只许以 DONE 或 RESUME 结尾）与吞吐升级梯（逼单块变长而非块数变多）。
+  触发场景：目标字数远超单轮上限；分卷/分册交付；跨多轮续写不丢进度；
   用户抱怨"又没写够""每次都要重新说一遍要求""写完才发现差一大截"。
-  English: LFBD — a batching/delivery protocol for ultra-long outputs (100k+ CJK chars)
-  that cannot be produced in one response. v8 turns "done" into an exit code:
-  run_state.py gate -> 0=DONE / 1=keep writing / 2=fix first; non-zero means you may not stop
-  and may not claim completion. Adds a turn-end contract (every turn ends with a DONE
-  certificate or a RESUME line, never a question) and a throughput escalation ladder.
-  Keeps throughput calibration, per-unit character floors, single-writer lock and G10."""
+  English: LFBD — batching/delivery for ultra-long outputs (100k+ CJK chars).
+  v9 pre-computes the round count x = target ÷ (per-turn cap × 0.8), then loops
+  through four phases: GENERATE / AUDIT / REPAIR / DONE. Volume is checked by
+  several methods (CJK, CJK+punctuation, non-space, built docx); if short, keep
+  writing; once met, run all gates; only if everything passes may you stop.
+  gate returns 0=DONE / 1=write more / 2=fix first — never end a turn with a question."""
+
+LIMIT = 1024
 
 
 def main(path):
@@ -41,15 +46,16 @@ def main(path):
     old_block = m.group(0)
     new_block = "description: |" + nl + DESC.replace("\n", nl) + nl
     text = text[:m.start()] + new_block + text[m.end():]
+    io.open(path, "w", encoding="utf-8", newline="").write(text)
 
     net = len(re.sub(r"\s", "", DESC))
-    raw = len(DESC)
-
-    io.open(path, "w", encoding="utf-8", newline="").write(text)
-    print("已替换 description 段：旧 %d 字符 → 新 %d 字符（净 %d 字符，上限 1024）"
-          % (len(old_block), raw, net))
-    print("是否超限：%s" % ("是 ✗" if net > 1024 else "否 ✓"))
-    return 0 if net <= 1024 else 1
+    print("description：旧 %d 字符 → 新 %d 字符（净 %d，上限 %d）"
+          % (len(old_block), len(DESC), net, LIMIT))
+    if net > LIMIT:
+        print("!! 仍然超限，必须再删 !!" % ())
+        return 1
+    print("余量 %d 字符 ✓" % (LIMIT - net))
+    return 0
 
 
 if __name__ == "__main__":
