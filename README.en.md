@@ -32,6 +32,27 @@ Also new: `next` — one line telling you the current phase and what to do, with
 **Strictest-count rule**: `gate` measures volume as `min(source CJK, docx CJK)`.
 "Sources are long enough but the generated docx lost content" can no longer be mistaken for done.
 
+### v9.1: cut the number of hand-offs
+
+A single turn can contain many model outputs, as long as tool calls sit in between
+(in Chatbox, one assistant reply here contained more than a dozen tool calls).
+v9.1 therefore forbids wrapping up between chunks.
+
+```bash
+python scripts/run_state.py init --target 170000 --cap 12000 --util 0.8 --chunks-per-turn 3
+# rounds x = 18
+# hand-offs you actually need: ceil(18 / 3) = 6
+```
+
+| Symbol | Meaning |
+|---|---|
+| `x` | number of model outputs required (semantic "rounds") |
+| `k` | chunks chained inside one turn |
+| `turns_needed ≈ ceil(x / k)` | **hand-offs you actually need** |
+
+> Honest limits: k is bounded by the harness iteration cap, so the figure is approximate.
+> And **x — the total output volume — cannot be compressed at all**; only hand-offs can.
+
 ## What's new in v8 — the anti-early-exit release
 
 Every earlier version taught you how to write *well*. None of them could **stop you from declaring victory early.**
