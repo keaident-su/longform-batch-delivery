@@ -106,6 +106,28 @@ python scripts/run_state.py init --target 170000 --cap 12000 --util 0.8 --chunks
 > 诚实说明：k 受 harness 迭代上限约束，不是无限大，所以这个数是“约”；
 > 而 **x（总输出量）根本不可压缩**——能压的只是接续次数。
 
+### v9.2：把真正的边界核实完了
+
+Chatbox 官方文档写明：**Work Mode 本身就是循环**（think → call tool → read result → repeat until done），
+唯一的硬边界是——
+
+> it automatically pauses after **25 consecutive tool calls** so you can check it is on track, then continue.
+
+这条**不可配置**。于是 v9.2 做了三件事：
+
+1. **铁律 8 收紧**：块与块之间不得输出任何消息；**正文一律通过 `write_file` 落盘**
+   （每次写入都算一步工具调用，循环继续）。
+2. **强制 Work Mode**：Chat Mode 不注入任何工具，根本没有循环。
+3. **把“点几次 Continue”算出来**：`init` 直接打印「预计只需点 N 次 Continue」；
+   实测偏了就跑 `calibrate` 用真实数据重算 x 与窗口数。
+
+| 问题 | 能否修复 |
+|---|---|
+| 块之间不该停 | ✅ 铁律 8（块间不得输出消息） |
+| 不该在 Chat Mode 跑长文 | ✅ 强制 Work Mode |
+| 每 25 步暂停 | ❌ 产品护栏，只能点 Continue |
+| 总输出量 x | ❌ 内容量，不可压缩 |
+
 **最严口径**：`gate` 判字数时取 `min(源文件汉字, docx 汉字)`——
 "源文件够、生成的 docx 却漏内容"不会再被误判成达标。
 
