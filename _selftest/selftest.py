@@ -80,6 +80,7 @@ def main():
     expect("init 退出码 0", rc == 0)
     expect("x = ceil(20000/4000) = 5", "= 5 轮" in out, "实际: %s" % (line[0] if line else "?"))
     expect("每轮计划产出 = 4000", "4000" in out)
+    expect("算出需接续次数 ceil(5/3)=2", "= 2 次" in out, "实际: %s" % [l for l in out.splitlines() if "接续的次数" in l])
 
     # 换个目标，方便后续跑到 DONE
     rc, out = run("init", "--target", "3000", "--cap", "5000", "--util", "0.8",
@@ -114,6 +115,15 @@ def main():
     print("  " + out.splitlines()[0])
     expect("tick 退出码 0", rc == 0)
     expect("记录为第 1/1 轮", "1/1" in out)
+
+    # ---------------- ④.5 轮内链式续跑 ----------------
+    print("== 4.5 plan --chunks：轮内链式续跑作业单 ==")
+    rc, out = run("plan", "--chunks", "3", "--skip-g10")
+    print("  " + [l for l in out.splitlines() if "链式续跑" in l][0] if "链式续跑" in out else "  （未命中）")
+    expect("plan --chunks 3 退出码 0", rc == 0, "实际 %s" % rc)
+    expect("输出含『轮内链式续跑』", "链式续跑" in out)
+    expect("输出含『不得收尾』", "不得收尾" in out)
+    expect("列出 3 个连续块的轮次", out.count("第 ") >= 3)
 
     # ---------------- ⑤ 字数达标 → DONE ----------------
     print("== 5. 字数达标且闸门全过 → DONE / exit 0 ==")
