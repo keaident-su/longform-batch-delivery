@@ -61,13 +61,14 @@ CN_NUMS = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6,
            "七": 7, "八": 8, "九": 9, "十": 10}
 
 DEFAULTS = {
-    "version": "9.2.0",
+    "version": "10.0.0",
     "target": 0,
     "cap": 12000,               # 模型单轮输出上限（中文字符）
     "util": 0.8,                # 利用率：单轮只按 80% 计
     "per_round": 0,             # = round(cap * util)
     "rounds_planned": 0,        # x = ceil(target / per_round)
-    "chunks_per_turn": 3,       # 一个回合里链式跑几块（受 harness 迭代上限约束）
+    "chunks_per_turn": 8,       # 一个回合里链式跑几块（回合内不许收尾）
+    "density": {"cjk_per_para": 120, "dialogue_ratio": 0.5},
     "turns_needed": 0,          # ≈ ceil(rounds_planned / chunks_per_turn)
     "steps_per_window": 25,     # Chatbox Work Mode：每 25 次连续工具调用暂停一次
     "calls_per_chunk": 2,       # 写一块大约要几次工具调用（write_file + 校验）
@@ -99,7 +100,7 @@ DEFAULTS = {
 RESUME_LINE = (
     "继续按 LFBD v9 运行契约执行：读 run_state.json，跑 "
     "`python scripts/run_state.py next` 看当前阶段，"
-    "本轮**链式跑满 chunks_per_turn 块**（块与块之间不要收尾、不要报告），再跑 "
+    "本轮**链式跑满 chunks_per_turn 块**（块与块之间不许输出任何汇总/汇报/结尾语），再跑 "
     "`python scripts/run_state.py gate`；未 exit 0 不许停、不许提问、不许征求确认。"
 )
 
@@ -452,6 +453,10 @@ def print_next_plan(d, sc, short, m=None, eff=None, chunks=1):
             print("      %d) 第 %d 轮：%d 单元 × %d 字 = %d 字"
                   % (i + 1, done_rounds + i + 1, units, cpu, planned))
         print("  · 本回合合计计划 %d 字；写满后再跑 gate" % (k * planned))
+        print("  · **回合内不许收尾**：块与块之间不输出任何汇总、表格或结尾语")
+        print("  · 密度要求：汉字/段 ≥ %d；对白行占比 ≤ %.0f%%（用密集叙述，不要一句一换行）"
+              % (d.get("density", {}).get("cjk_per_para", 120),
+                 d.get("density", {}).get("dialogue_ratio", 0.5) * 100))
     print("  · 按当前计划，还需约 %d 轮" % rounds)
     if short:
         print("  · 存量欠账：%d 个单元低于地板（前 5 个）" % len(short))
@@ -767,6 +772,49 @@ def cmd_calibrate(a):
     return 0
 
 
+def density_stats(sc):
+    """统计正文密度：对白段产出率极低，必须能量化地盯住。"""
+    text = sc["text"]
+    cjk = len(CJK.findall(text))
+    paras = [p for p in re.split(r"\n\s*\n", text) if p.strip()]
+    lines = [l for l in text.split("\n") if l.strip()]
+    dlg = [l for l in lines
+           if l.strip().startswith(("\u201c", "\""))
+           or "\uff1a\u201c" in l or '\uff1a"' in l]
+    return {
+        "cjk": cjk,
+        "paras": len(paras),
+        "lines": len(lines),
+        "cjk_per_para": round(cjk / max(1, len(paras)), 1),
+        "cjk_per_line": round(cjk / max(1, len(lines)), 1),
+        "dialogue_ratio": round(len(dlg) / max(1, len(lines)), 3),
+    }
+
+
+def cmd_density(a):
+    d = load()
+    sc = scan(d)
+    s = density_stats(sc)
+    th = d.get("density", {})
+    pmin = th.get("cjk_per_para", 120)
+    dmax = th.get("dialogue_ratio", 0.5)
+    print("=" * 64)
+    print("正文密度核算（对白段汉字产出率极低，这是最大的隐形浪费）")
+    print("=" * 64)
+    print("  汉字总数            %d" % s["cjk"])
+    print("  段落数 / 行数        %d / %d" % (s["paras"], s["lines"]))
+    print("  汉字/段            %8.1f   （目标 ≥ %d）%s"
+          % (s["cjk_per_para"], pmin, "" if s["cjk_per_para"] >= pmin else "  ← 偏低"))
+    print("  汉字/行            %8.1f" % s["cjk_per_line"])
+    print("  对白行占比         %7.1f%%  （目标 ≤ %.0f%%）%s"
+          % (s["dialogue_ratio"] * 100, dmax * 100,
+             "" if s["dialogue_ratio"] <= dmax else "  ← 偏高，一行一句最费回合预算"))
+    ok = s["cjk_per_para"] >= pmin and s["dialogue_ratio"] <= dmax
+    print("  结论：%s" % ("密度达标" if ok else "**密度不合格：下一块请用密集叙述写，不要一句一换行**"))
+    print("=" * 64)
+    return 0 if ok else 2
+
+
 def cmd_resume(a):
     print(RESUME_LINE)
     return 0
@@ -810,7 +858,8 @@ def main():
     p.add_argument("--deliverable", action="append")
 
     for name, fn in (("gate", cmd_gate), ("plan", cmd_plan), ("report", cmd_report),
-                     ("next", cmd_next), ("count", cmd_count)):
+                     ("next", cmd_next), ("count", cmd_count),
+                     ("density", cmd_density)):
         p = sp.add_parser(name); p.set_defaults(f=fn)
         p.add_argument("--skip-g10", action="store_true")
         if name == "plan":
