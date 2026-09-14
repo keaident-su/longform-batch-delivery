@@ -1,7 +1,9 @@
-# longform-batch-delivery · 长文本分批交付协议 (LFBD v7)
+# longform-batch-delivery · 长文本分批交付协议 (LFBD v8)
 
 > **一句话**：先测产出、再排期；每轮都有账本；差多少永远秒答；不许用短段落注水。
+> **v8 一句话**：**"完成"不是你说了算，是退出码说了算**（`run_state.py gate` exit 0）。
 > **One-liner**: calibrate throughput first, keep a disk ledger, always know the exact shortfall, never pad with stub units.
+> **v8**: "done" is an **exit code** — `0=DONE, 1=keep writing, 2=fix first`. Never end a turn with a question.
 
 [简体中文](#为什么你用了技能还是没写完) ｜ [English](#why-it-still-didnt-finish)
 
@@ -28,22 +30,50 @@ v5 收到最多的抱怨是："我用了这个技能，怎么还是没写完？"
 
 ```bash
 # 0) 放好你的源目录，比如 scenes/
+# ---- 【v8 主路线】停止谓词驱动：跑到 exit 0 为止，中途不问不倚 ----
+python scripts/run_state.py init --target 170000 --glob "scenes/act4*_*.txt" --prefix act4
+python scripts/run_state.py plan     # 拿作业单：写几个单元、每单元至少多少字
+#   ……写正文，落盘（正文不进聊天）……
+python scripts/run_state.py tick --added 9200 --units 5 --cursor 214
+python scripts/run_state.py gate     # 退出码 0=DONE ／ 1=继续写 ／ 2=先修问题
+python scripts/run_state.py resume   # 需要续跑时，把这一行贴回对话框
+
+# ---- 【v6/v7 路线】账本 + 结构校验 + 内容扫描（保留） ----
 # 1) 初始化账本（目标 17 万中文字符）
 python scripts/ledger.py init --target 170000 --parts "上册:238" "下册:0"
 
-# 2) 写第 1 批，然后校验 + 拿到"下一批作业单"
-python scripts/build_and_verify.py --target 170000
+# 2) 写第 1 批，然后校验 + 拿到"下一批作业单"（--strict 可作停止谓词用于 CI）
+python scripts/build_and_verify.py --target 170000 --strict
 
 # 3) 记录本批实测吞吐（这一步会算出"还需几轮"）
 python scripts/ledger.py update --added 9200 --blocks 15 --cursor 200
 
-# 4) 任何时候问"还差多少"
 # 4) 任何时候问"还差多少"
 python scripts/size_report.py --dir scenes --glob "*.txt" --target 170000
 
 # 5) 【v7】内容级检查：重复/事实冲突/跨来源拼接（带逐场对照表）
 python scripts/dedupe_scan.py scenes --cross-table --out g10.txt
 ```
+
+---
+
+## v8 相对 v7 新增了什么（解决"用了技能还是停"）
+
+前面所有版本都在教你**怎么写好**。没有任何一版能**阻止**你提前宣布完成。
+真实事故：目标 170,000 字，写到 27,822 字（16.4%）就"交付"，末尾还附一句
+"要不要先出上册，回我一句"——那只是变相的"停下来问"。
+
+v8 就干一件事：**把"完成"变成退出码。**
+
+| 机制 | 文件 | 说明 |
+|---|---|---|
+| **M1 停止谓词** | `scripts/run_state.py gate` | 退出码 `0=DONE / 1=RUNNING / 2=BLOCKED`。**非 0 一律不许停。** |
+| **M2 轮末契约** | `templates/turn_contract.md` | 每轮只许以 `✅ DONE` 或 `⏩ RESUME` 结尾，禁止任何提问/征询/提议 |
+| **M3 吞吐升级梯** | `run_state.py tick` | `cpu = max(地板×1.4, 上轮cpu×1.35)`，`units = 预算÷cpu`——靠算术逼单块变长 |
+| 自测 | `_selftest/selftest.py` | 12 项断言，覆盖三种退出码 + 重号/时间倒流/G10 反向用例 |
+
+以前你遇到的那种结尾（"如果你希望现在就先拿一份……回我一句"）在 v8 下属于**违规**：
+它既不是 `✅ DONE`，也不是 `⏩ RESUME`。
 
 ---
 
@@ -92,22 +122,25 @@ v6 的 G1–G9 全部是**形式**闸门（字数/编号/时间/字段/结构/�
 | **G8 重号污染** | 同编号不出现在两个文件；扫描范围外文件=污染 |
 | **G9 单元地板** | 每单元字数 ≥ 地板，并输出补写清单 |
 | **G10 内容重复/事实冲突** | 无逐字重复段落；同场各块事实不打架；补充场不换词重写主场次；正文日期不与时间字段脱节（`dedupe_scan.py`） |
+| **P0 停止谓词（v8）** | `run_state.py gate` 退出码 `0=DONE / 1=RUNNING / 2=BLOCKED`；**非 0 即不许停、不许写"完成"** |
 
 ---
 
 ## 目录结构
 
 ```
-SKILL.md                      主协议（v6）
+SKILL.md                      主协议（v8）
 README.md / README.en.md      中英文说明
 docs/workflow.zh.md           中文工作流
 docs/workflow.en.md           English workflow
 scripts/ledger.py             账本：init / update / show / next
-scripts/build_and_verify.py   重建 + G2–G9 + 下一批作业单
+scripts/run_state.py          【v8】停止谓词 + 轮末契约 + 吞吐升级梯
+scripts/build_and_verify.py   重建 + G2–G9 + 下一批作业单（`--strict` 可作停止谓词）
 scripts/size_report.py        目标/当前/还差/完成度/还需几轮
 scripts/publish_github.py     推送技能到 GitHub（UTF-8 安全）
 scripts/dedupe_scan.py        【v7】G10：内容重复/事实冲突/跨来源拼接冲突 + 逐场对照表
-templates/                    账本与分批计划模板
+templates/                    账本、分批计划、**轮末契约卡片**（turn_contract.md）
+_selftest/selftest.py         【v8】停止谓词回归测试（12 项断言）
 ```
 
 ---
@@ -118,6 +151,8 @@ templates/                    账本与分批计划模板
 - **铁律 2**：正文只落盘，不进聊天。
 - **铁律 3**：每批结束必须重建＋校验＋汇报，汇报必含 `目标/当前/还差/完成度`。
 - **铁律 4**：用户说"全部写完"时，一轮内连续跑批，不问"要继续吗"。
+- **铁律 5**：**"完成"必须由退出码证明**——`run_state.py gate` 非 0 不得收工。
+- **铁律 6**：**轮末只许两种结尾**——`✅ DONE` 或 `⏩ RESUME`，禁止任何提问。
 - **骨架先行**：先出全量骨架（编号＋一句锚点＋计划字数），再逐段填正文，填的时候不许改编号。
 - **断点续写**：用户只说"继续"时，读账本 → 取游标 → 按实测吞吐算范围 → 直接写，不重问需求。
 
@@ -142,13 +177,35 @@ Four hard constraints, not a prompt problem:
 3. **R3 — Padding with stub units produces hollow drafts.** v6 adds a **per-unit character floor (G9)** and an auto-generated top-up worklist.
 4. **R4 — Parallel/multi-session runs duplicate IDs.** v6 adds a **single-writer lock (`RUN.lock`)** and fails the build on duplicates **(G8)**.
 
+### What's new in v8
+
+Every earlier version taught you how to write *well*. None could **stop you from declaring victory early**.
+Real incident: target 170,000 chars, "delivered" at 27,822 (16.4%), ending with
+*"want a first volume now? just say the word"* — a question in disguise.
+
+v8 does one thing: **turns "done" into an exit code.**
+
+| Mechanism | File | What it does |
+|---|---|---|
+| **M1 Stop predicate** | `scripts/run_state.py gate` | `0=DONE / 1=RUNNING / 2=BLOCKED`; **non-zero means you may not stop** |
+| **M2 Turn-end contract** | `templates/turn_contract.md` | End every turn with `✅ DONE` or `⏩ RESUME` — never a question |
+| **M3 Escalation ladder** | `run_state.py tick` | `cpu = max(floor×1.4, prev_cpu×1.35)`, `units = budget÷cpu` — forces longer units |
+| Self-test | `_selftest/selftest.py` | 12 assertions across all three exit codes plus duplicate/timeline/G10 regressions |
+
 ### Quick start
 
 ```bash
+# v8 main path — stop-predicate driven
+python scripts/run_state.py init --target 170000 --glob "scenes/act4*_*.txt" --prefix act4
+python scripts/run_state.py plan     # work order: N units × M chars each
+python scripts/run_state.py tick --added 9200 --units 5 --cursor 214
+python scripts/run_state.py gate     # 0=DONE / 1=keep writing / 2=fix first
+python scripts/run_state.py resume   # paste this line to continue
+
+# v6/v7 path — ledger + structural verify + content scan
 python scripts/ledger.py init --target 170000 --parts "vol1:238" "vol2:0"
-python scripts/build_and_verify.py --target 170000
-python scripts/ledger.py update --added 9200 --blocks 15 --cursor 200
-python scripts/size_report.py --dir scenes --glob "*.txt" --target 170000
+python scripts/build_and_verify.py --target 170000 --strict
+python scripts/dedupe_scan.py scenes --cross-table --out g10.txt
 ```
 
 ### What's new in v6
@@ -161,4 +218,4 @@ python scripts/size_report.py --dir scenes --glob "*.txt" --target 170000
 
 ### Gates
 
-G1 volume · G2 IDs · G3 timeline · G4 fields · G5 structure · G6 degradation · G7 artifact opens · **G8 duplicate pollution** · **G9 unit floors** · **G10 content duplication / fact conflicts (v7)**
+G1 volume · G2 IDs · G3 timeline · G4 fields · G5 structure · G6 degradation · G7 artifact opens · **G8 duplicate pollution** · **G9 unit floors** · **G10 content duplication / fact conflicts (v7)** · **P0 stop predicate (v8)**
