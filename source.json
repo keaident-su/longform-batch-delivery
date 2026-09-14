@@ -1,10 +1,10 @@
 {
   "type": "chat",
   "name": "longform-batch-delivery",
-  "version": "9.1.0",
+  "version": "9.2.0",
   "repo": "https://github.com/keaident-su/longform-batch-delivery",
   "license": "MIT",
   "lang": ["zh-CN", "en"],
-  "whatsNew": "v9 adds an explicit round contract and a four-phase loop. It pre-computes x = target / (per-turn cap x 0.8), runs GENERATE until the volume target is met (verified by several counting methods, including the built docx), then AUDIT -> if anything fails, REPAIR and re-audit, until gate exits 0. v9.1 adds intra-turn chaining: run k chunks per turn with no wrap-up between them, so a 170k-char job needs about 6 hand-offs instead of 18. run_state.py gate is the only legal definition of done: 0=DONE, 1=keep writing, 2=fix first. Every turn must end with a DONE certificate or a RESUME line, never a question.",
+  "whatsNew": "v9.2 runs the loop the way Chatbox actually provides one. Work Mode is itself a think-call-read-repeat loop; the only hard boundary is a built-in pause every 25 consecutive tool calls. So the skill now forbids ending a message between chunks (prose is always written through a tool call), requires Work Mode, and computes how many Continue clicks a job needs: init prints 'expected Continue clicks N'. New calibrate command recomputes x from measured chars-per-chunk. v9 added the round contract x = target / (cap x 0.8) with a four-phase loop (GENERATE/AUDIT/REPAIR/DONE); gate stays the only legal definition of done (0=DONE / 1=keep writing / 2=fix first).",
   "installedAt": "2026-09-14T08:52:02.654Z"
 }
