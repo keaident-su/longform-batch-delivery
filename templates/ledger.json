@@ -1,0 +1,21 @@
+{
+  "target": 170000,
+  "unit": "cjk_chars",
+  "per_batch_budget": 10000,
+  "batches_planned": 17,
+  "batches_done": 0,
+  "current_total": 0,
+  "cursor": {
+    "chapter": 9,
+    "scene": 242
+  },
+  "updated_at": "2026-01-01T00:00:00+08:00",
+  "batches": [],
+  "checks": {
+    "id_continuous": true,
+    "time_monotonic": true,
+    "fields_complete": true,
+    "degradation": "clean",
+    "deliverable_opens": true
+  }
+}
