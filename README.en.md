@@ -1,9 +1,36 @@
-# longform-batch-delivery (LFBD v8)
+# longform-batch-delivery (LFBD v9)
 
 > **One-liner**: calibrate throughput first, keep a disk ledger, always know the exact shortfall, never pad with stub units.
 > **v8**: "done" is an **exit code** — `run_state.py gate` returns `0=DONE, 1=keep writing, 2=fix first`. Never end a turn with a question.
+> **v9**: **compute the round count first** — `x = ceil(target ÷ (per-turn cap × 0.8))` — then loop `GENERATE → AUDIT → REPAIR → DONE`; nothing stops before DONE.
 
 A batching/delivery protocol for ultra-long outputs: novels, screenplays, reports, multi-volume documents — anything above ~100k Chinese characters that cannot be produced in one response.
+
+## What's new in v9 — the round contract
+
+v8 could stop early exits, but it never answered the prior question: **how many rounds is this job, anyway?**
+
+v9 makes that a contract:
+
+```
+x = ceil(target_chars ÷ (per-turn output cap × 0.8))
+```
+
+170,000 chars with a 12,000-char cap → `x = ceil(170000 ÷ 9600) = 18 rounds`.
+
+| Step | Implemented by |
+|---|---|
+| ① Set round count x | `init --cap 12000 --util 0.8` → stored as `rounds_planned` |
+| ② Run x rounds first | `plan` issues the work order; `tick` records `round n/x` |
+| ③ Verify volume several ways | `count`: CJK / CJK+punctuation / non-space / total / built docx |
+| ④ Short → keep writing | `gate` exits 1 (`GENERATE`) |
+| ⑤ Met → audit | `gate` automatically enters `AUDIT` |
+| ⑥ All pass → stop | `gate` exits 0 (`DONE`), else 2 (`REPAIR` / `BLOCKED`) |
+
+Also new: `next` — one line telling you the current phase and what to do, with the matching exit code.
+
+**Strictest-count rule**: `gate` measures volume as `min(source CJK, docx CJK)`.
+"Sources are long enough but the generated docx lost content" can no longer be mistaken for done.
 
 ## What's new in v8 — the anti-early-exit release
 
@@ -70,8 +97,11 @@ If `target ÷ cap > 1`, finishing in one turn is arithmetically impossible.
 
 ```bash
 # v8 main path — stop-predicate driven
-python scripts/run_state.py init --target 170000 --glob "scenes/act4*_*.txt" --prefix act4
-python scripts/run_state.py plan     # work order: N units × M chars each
+python scripts/run_state.py init --target 170000 --cap 12000 --util 0.8 \
+    --glob "scenes/act4*_*.txt" --prefix act4
+python scripts/run_state.py next     # current phase + what to do (1=write / 2=fix / 0=may stop)
+python scripts/run_state.py plan     # work order: round n/x, unit count, min chars per unit
+python scripts/run_state.py count    # multi-method volume check (CJK / punctuation / docx)
 python scripts/run_state.py tick --added 9200 --units 5 --cursor 214
 python scripts/run_state.py gate     # 0=DONE / 1=keep writing / 2=fix first
 python scripts/run_state.py resume   # paste this line to continue
@@ -94,10 +124,11 @@ python scripts/publish_github.py --repo owner/name --src . --branch main \
 4. When the user says "write it all", chain batches until the turn limit — **do not ask "continue?"**.
 5. **"Done" must be proven by an exit code.** Run `run_state.py gate`; if it is non-zero you may not write "done" and may not wrap up.
 6. **A turn may end in exactly two ways**: `✅ DONE` (only when `gate` is 0) or `⏩ RESUME`. No questions, no offers, no "shall I…".
+7. **Compute the rounds before you write**: `x = ceil(target ÷ (cap × 0.8))`. Running x rounds is **not** completion — only `gate` exit 0 is.
 
 ## Gates
 
-G1 volume · G2 IDs · G3 timeline · G4 fields · G5 structure · G6 degradation · G7 artifact opens · **G8 duplicate pollution** · **G9 unit floors** · **G10 content duplication / fact conflicts (v7)** · **P0 stop predicate (v8)**
+G1 volume · G2 IDs · G3 timeline · G4 fields · G5 structure · G6 degradation · G7 artifact opens · **G8 duplicate pollution** · **G9 unit floors** · **G10 content duplication / fact conflicts (v7)** · **P0 stop predicate (v8+)**
 
 ## Layout
 
