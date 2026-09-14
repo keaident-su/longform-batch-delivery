@@ -1,6 +1,6 @@
 ---
 name: longform-batch-delivery
-version: 9.0.0
+version: 9.1.0
 description: |
   长文本分批交付协议（LFBD）。用于任何"一次性写不完"的超长产出（十几万字的小说/剧本/报告/多卷文档）。
   v9 核心：先把"要跑几轮"算出来，再把"完成"变成退出码——
@@ -10,6 +10,7 @@ description: |
   scripts/run_state.py 四阶段：GENERATE / AUDIT / REPAIR / DONE；
   gate 返回 0=DONE／1=继续写／2=先修问题，非 0 一律不许停、不许提问。
   配套轮末契约（每轮只许以 DONE 或 RESUME 结尾）与吞吐升级梯（逼单块变长而非块数变多）。
+  并把 N 次接续压成 N/k 次：一个回合内链式连跑 k 块，块与块之间不收尾。
   触发场景：目标字数远超单轮上限；分卷/分册交付；跨多轮续写不丢进度；
   用户抱怨"又没写够""每次都要重新说一遍要求""写完才发现差一大截"。
   English: LFBD — batching/delivery for ultra-long outputs (100k+ CJK chars).
@@ -18,6 +19,7 @@ description: |
   several methods (CJK, CJK+punctuation, non-space, built docx); if short, keep
   writing; once met, run all gates; only if everything passes may you stop.
   gate returns 0=DONE / 1=write more / 2=fix first — never end a turn with a question.
+  Chaining k chunks inside one turn (no wrap-up between chunks) cuts hand-offs to about 1/k.
 allowed-tools:
   - Read
   - Write
@@ -72,6 +74,8 @@ v6/v7 一共十个闸门，全都在回答"这份稿子写得好不好"。
 4. **用户说"全部写完""不许停""不要每轮问我"时**：在同一条回复里**连续跑批**（落盘→校验→再落盘→再校验），直到本轮输出上限；**不许中途停下来问"要继续吗"**，只在末尾报一次进度。
 5. **"完成"必须由退出码证明。** 收工前必须跑 `python scripts/run_state.py gate`，**退出码非 0 一律不许写"完成"、不许收尾**。模型的自评无效。
 6. **轮末只许两种结尾。** `✅ DONE`（仅当 gate exit 0）或 `⏩ RESUME`（其余一切情况）。**禁止任何提问、征询、提议**——包括"要不要…""如果你希望…""回我一句…"。
+7. **先算轮数再开写。** `x = ceil(目标 ÷ (单轮上限 × 0.8))`。但**跑满 x 轮 ≠ 完成**，验收只看 `gate`。
+8. **块与块之间不得收尾。** 一个回合里链式跑满 `chunks_per_turn` 块（默认 3）；写完一块要立刻写下一块，**不许在块之间输出汇报或提问**。把"需接续 N 次"压成"N ÷ k 次"。
 
 ---
 
@@ -197,6 +201,48 @@ python scripts/run_state.py count    # 多路核字数
 python scripts/run_state.py tick --added 9200 --units 5 --cursor 214
 python scripts/run_state.py gate     # 唯一合法的停止判据
 ```
+
+---
+
+## 1.7 轮内链式续跑（v9.1：把接续次数砍掉一截）
+
+### 原理
+
+一个回合（turn）并不是"一次模型输出"。只要中间夹着工具调用，同一回合里可以发生**多次**模型输出。
+证据：你看到的这一轮对话里，助手的单次回复包含了十几次工具调用——回合是等助手
+**输出一条不带工具调用的消息**才结束的。
+
+所以真正卡住“17 万字要催 18 次”的，不是输出上限，而是**“写完一块就忍不住收尾”这个习惯**。
+
+### 规则
+
+```
+chunks_per_turn = k
+```
+
+* 一个回合里链式跑满 k 块；**块与块之间不得收尾、不得汇报、不得提问**。
+* 写完一块 → 直接拿下一块 → 全部跑完或 `gate` exit 0，才允许结尾。
+* `plan --chunks k` 一次性给出连续 k 块的作业单，不用反复读状态。
+
+### 它把数字变成什么
+
+| 量 | 含义 |
+|---|---|
+| `x = rounds_planned` | 需要多少次模型输出（语义上的“轮”） |
+| `k = chunks_per_turn` | 一个回合里链式跑几块 |
+| `turns_needed ≈ ceil(x / k)` | **你实际需要接续的次数** |
+
+例：目标 170,000、`cap=12000`、`util=0.8` → `x=18`；`k=3` → **需接续 6 次**（不链式是 18 次）。
+`init` 会直接把这两个数字都打印出来。
+
+> **诚实边界**：k 受 harness 的迭代上限约束，不是无限大；k 到底能到几取决于平台。
+> 所以公式给的是“约”，但把 18 次压到 6 次是确定能拿到的。
+> 另一个真边界：**x 本身（总输出量）不可压缩**——那是内容量，不是效率问题。
+
+### 与“收尾”矛盾吗？
+
+不矛盾。§1 的铁律 6 管的是**回合结束时**的结尾；本节管的是**回合进行中**的行为。
+一句话：**中间不汇报，最后才汇报；但最后那一句仍必须是 `✅ DONE` 或 `⏩ RESUME`。**
 
 ---
 
@@ -458,6 +504,14 @@ python scripts/dedupe_scan.py scenes --cross-table --out g10.txt
 ---
 
 ## 13. 更新日志
+
+### v9.1.0
+- **新增轮内链式续跑**：`init --chunks-per-turn k`（默认 3）；`plan --chunks k` 一次给出连续 k 块作业单。
+  铁律 8：**块与块之间不得收尾、不得汇报、不得提问**。
+- `init` 直接打印**“需你接续的次数” ≈ ceil(x / k)**：17 万字从“催 18 次”降到“催 6 次”。
+- 新增 §1.7，把“回合内可含多次模型输出”这个机制写成规则；并明确 k 受 harness 迭代上限约束。
+- 诚实边界：**x（总输出量）不可压缩**，能压缩的只是接续次数。
+- 回归测试扩到 **28 项断言**（含链式作业单与接续次数计算）。
 
 ### v9.0.0
 - **新增轮数契约**：`init --cap --util` 先算出 `x = ceil(目标 ÷ (上限×0.8))`，写进 `rounds_planned`，
