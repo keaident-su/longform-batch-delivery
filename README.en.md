@@ -6,6 +6,29 @@
 
 A batching/delivery protocol for ultra-long outputs: novels, screenplays, reports, multi-volume documents — anything above ~100k Chinese characters that cannot be produced in one response.
 
+## What's new in v10 — the actual fix for "it stops after one round"
+
+First, a widely repeated claim is **wrong**: that the turn boundary is set by the client and skills
+cannot change it. A turn ends only when a message carries **no tool call** — one turn here contained
+a dozen-plus tool calls. So "it stops after one round" has four distinct causes:
+
+| Real cause | Nature | Fixable? |
+|---|---|---|
+| The model wants to wrap up (v8/v9's M2 actively **required** it) | Habit | ✅ fixed in v10 |
+| The client's `pauseOnToolCallLimit` | Config flag | ✅ just change it |
+| Context window / per-response cap | Physical limit | ❌ manage it (`autoCompaction`) |
+| Total output volume x | Content | ❌ should not be changed |
+
+**What v10 changes:**
+
+1. **M2 was self-defeating** — "every reply must end with ✅ DONE or ⏩ RESUME" was itself pushing the model
+to wrap up. It now reads: **write an ending only when the turn is actually ending**; mid-turn, emit no summary,
+no table, no closing line — just make the next tool call.
+2. **Density-first.** A "300-char-looking" dialogue exchange adds only ~60 CJK chars.
+   New `density` command: `CJK/paragraph ≥ 120`, `dialogue lines ≤ 50%`, exits 2 otherwise.
+
+`chunks_per_turn` default raised from 3 to **8**.
+
 ## What's new in v9 — the round contract
 
 v8 could stop early exits, but it never answered the prior question: **how many rounds is this job, anyway?**
