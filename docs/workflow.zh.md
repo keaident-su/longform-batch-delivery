@@ -76,6 +76,17 @@ python scripts/run_state.py count
 
 ---
 
+## 0.7 运行姿势：必须在 Work Mode（v9.2）
+
+Chatbox 的 Work Mode 本身就是循环（think → call tool → read result → repeat until done），
+唯一的硬边界是 **每 25 次连续工具调用暂停一次**。
+
+- 长文写作**必须**在 Work Mode；Chat Mode 不注入工具，循环不存在。
+- 正文一律用 `write_file` 落盘；**块与块之间不得输出任何消息**。
+- `init` 会打印「预计只需点 N 次 Continue」；实测偏了跑 `calibrate` 重算。
+
+---
+
 ## 1. 骨架先行
 
 先只写骨架：每个场/章一行，`编号 + 一句锚点 + 计划字数`，不写正文。骨架先交付确认，之后只做"填肉"。
