@@ -6,6 +6,40 @@
 2. **Freeze a batch plan**: table of `batch / range / planned chars / cumulative`.
 3. **Create the ledger**: `python scripts/ledger.py init --target 170000 --parts "vol1:238" "vol2:0"`
 
+## 0.5 Stop predicate & turn-end contract (v8, highest priority)
+
+### The stop predicate: the only legal definition of "done"
+
+```bash
+python scripts/run_state.py gate
+```
+
+| Exit code | State | What you do |
+|---|---|---|
+| **0** | `DONE` | Volume target met + all gates pass + artifacts exist → **you may stop** |
+| **1** | `RUNNING` | Not enough volume → **keep writing**; never write "done", never ask |
+| **2** | `BLOCKED` | Must-fix items → **fix, then keep going** — not stop and ask |
+
+### Turn-end contract: exactly two legal endings
+
+- `✅ DONE` (only when `gate` returns 0)
+- `⏩ RESUME` + the line printed by `run_state.py resume` (every other case)
+
+Forbidden: `shall I…` / `do you want me to continue?` / `just say the word and I'll…`.
+
+### One standard turn
+
+```bash
+python scripts/run_state.py where    # see the current contract first
+python scripts/run_state.py plan     # work order: N units × at least M chars each
+#   … write prose, dump to disk …
+python scripts/run_state.py tick --added 9200 --units 5 --cursor 214   # runs the escalation ladder
+python scripts/run_state.py gate     # exit code decides your ending
+python scripts/run_state.py resume   # prints the continuation line
+```
+
+---
+
 ## 1. Skeleton first
 
 Write only the skeleton: one line per unit — `ID + one-sentence anchor + planned chars`. Get it confirmed, then fill prose only. **Never change IDs or order while filling.**
@@ -30,7 +64,8 @@ The build only scans `file_prefixes`; any other file with a similar name is trea
 5. Short → top up INSIDE this batch; never defer the gap
 6. python scripts/ledger.py update --added <n> --blocks <k> --cursor <last id>
 7. Report (fixed table)
-8. If the user said "write it all" → go to step 1 and keep going until the turn cap
+8. python scripts/run_state.py gate
+9. exit 0 → end with ✅ DONE; otherwise → back to step 1 and end with ⏩ RESUME
 ```
 
 ## 4. Report template
@@ -48,6 +83,7 @@ Measured: a chars/block | b chars/round | ~r rounds left
 
 Added: <what this batch covered>
 Gates: G1✓ … G10✓
+Ending: ✅ DONE (only if gate exits 0) or ⏩ RESUME (every other case)
 Next: <range + planned chars>
 ```
 
@@ -84,4 +120,4 @@ G8 fails first. **Do not auto-merge.** Decide by hand which file survives, delet
 
 ## 7. Resuming in a new session
 
-Read `LEDGER.md` / `ledger.json`, take the cursor, compute the range from measured throughput, and write. **Do not re-ask requirements.**
+Run `python scripts/run_state.py where` and `plan` first; read `run_state.json` / `LEDGER.md`, take the cursor, compute the range from measured throughput, and write. **Do not re-ask requirements.**
