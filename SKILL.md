@@ -1,20 +1,23 @@
 ---
 name: longform-batch-delivery
-version: 8.0.1
+version: 9.0.0
 description: |
   长文本分批交付协议（LFBD）。用于任何"一次性写不完"的超长产出（十几万字的小说/剧本/报告/多卷文档）。
-  v8 核心：把"完成"变成退出码——scripts/run_state.py gate 返回 0=DONE／1=继续写／2=先修问题，
-  非 0 一律不许停、不许写"完成"；配合轮末契约（每轮只许以 DONE 或 RESUME 结尾，禁止任何提问）
-  与吞吐升级梯（强制单块变长，而非块数变多）。
-  v6/v7 能力全部保留：吞吐标定、单元字数地板、单写者锁、G10 内容一致性闸门。
-  触发场景：目标字数远超单轮上限（约 8,000–12,000 中文字符）；分卷/分册交付；跨多轮续写不丢进度；
+  v9 核心：先把"要跑几轮"算出来，再把"完成"变成退出码——
+  轮数契约 x = 目标字数 ÷（单轮输出上限 × 0.8）；先跑满 x 轮，
+  再用多种口径核字数（源文件汉字／含全角标点／去空白／交付 docx），不够就补；
+  够了才进入排查，问题全过才允许停。
+  scripts/run_state.py 四阶段：GENERATE / AUDIT / REPAIR / DONE；
+  gate 返回 0=DONE／1=继续写／2=先修问题，非 0 一律不许停、不许提问。
+  配套轮末契约（每轮只许以 DONE 或 RESUME 结尾）与吞吐升级梯（逼单块变长而非块数变多）。
+  触发场景：目标字数远超单轮上限；分卷/分册交付；跨多轮续写不丢进度；
   用户抱怨"又没写够""每次都要重新说一遍要求""写完才发现差一大截"。
-  English: LFBD — a batching/delivery protocol for ultra-long outputs (100k+ CJK chars)
-  that cannot be produced in one response. v8 turns "done" into an exit code:
-  run_state.py gate -> 0=DONE / 1=keep writing / 2=fix first; non-zero means you may not stop
-  and may not claim completion. Adds a turn-end contract (every turn ends with a DONE
-  certificate or a RESUME line, never a question) and a throughput escalation ladder.
-  Keeps throughput calibration, per-unit character floors, single-writer lock and G10.
+  English: LFBD — batching/delivery for ultra-long outputs (100k+ CJK chars).
+  v9 pre-computes the round count x = target ÷ (per-turn cap × 0.8), then loops
+  through four phases: GENERATE / AUDIT / REPAIR / DONE. Volume is checked by
+  several methods (CJK, CJK+punctuation, non-space, built docx); if short, keep
+  writing; once met, run all gates; only if everything passes may you stop.
+  gate returns 0=DONE / 1=write more / 2=fix first — never end a turn with a question.
 allowed-tools:
   - Read
   - Write
@@ -22,10 +25,11 @@ allowed-tools:
   - Bash
 ---
 
-# 长文本分批交付协议 LFBD v8
+# 长文本分批交付协议 LFBD v9
 
 > 一句话：**先测产出、再排期；每轮都有账本；差多少永远秒答；不许用短段落注水。**
 > **v8 一句话："完成"不是你说了算，是退出码说了算（`gate` exit 0）。**
+> **v9 一句话：先算出"要跑几轮"（x = 目标 ÷ 上限×0.8），再按 GENERATE→AUDIT→REPAIR→DONE 转，非 DONE 不停。**
 
 ---
 
@@ -71,7 +75,7 @@ v6/v7 一共十个闸门，全都在回答"这份稿子写得好不好"。
 
 ---
 
-## 1.5 停止谓词与轮末契约（v8 核心：为什么这次真的会跑完）
+## 1.5 停止谓词与轮末契约（v8 引入，v9 沿用）
 
 ### 1.5.1 三条机制
 
@@ -90,8 +94,9 @@ python scripts/run_state.py gate
 | 退出码 | 状态 | 含义 | 允许做的事 |
 |---|---|---|---|
 | **0** | `DONE` | 字数 ≥ 目标 **且** 全部闸门通过 **且** 交付物存在 | **只有此时**才可以在回复里写"完成" |
-| **1** | `RUNNING` | 字数未达标 | 立刻接着写下一批。不许汇报"已完成"，不许提问 |
-| **2** | `BLOCKED` | 有必修复项（重号 / G10 冲突 / 结构错乱 / 地板不达） | **修完接着跑**，不是停下来问 |
+| **1** | `GENERATE` | 字数未达标 | 立刻接着写下一批。不许汇报"已完成"，不许提问 |
+| **2** | `REPAIR` | 字数达标，但有形式问题（编号/时间/字段/退化/地板） | 按清单修，不写新内容，修完重跑 |
+| **2** | `BLOCKED` | 重号 / G10 冲突 / 交付物损坏 | **先处理，再重跑**，不是停下来问 |
 
 铁令：**写完一批 → 跑 `gate` → 看退出码。退出码不是 0，这一轮就没有结束。**
 
@@ -144,6 +149,54 @@ v8 把它变成算术：
 ```
 
 **换会话也不需要用户做任何事**：读 `run_state.json` → 跑 `plan` → 接着写。用户唯一需要说的是"继续"。
+
+---
+
+## 1.6 轮数契约与四阶段循环（v9 核心：把"跑几轮"先算出来）
+
+### 1.6.1 轮数契约 x
+
+```bash
+python scripts/run_state.py init --target 170000 --cap 12000 --util 0.8
+```
+
+```
+轮数 x = ceil(目标字数 ÷ (单轮输出上限 × 利用率))
+       = ceil(170000 ÷ (12000 × 0.8))
+       = ceil(170000 ÷ 9600) = 18 轮
+```
+
+`--cap` 是**模型单轮输出上限**（中文字符，默认 12000），`--util` 默认 0.8。
+x 一旦算出就写进 `run_state.json` 的 `rounds_planned`，此后每轮都显示 `轮 n/x`。
+
+### 1.6.2 六个步骤（与需求口径一一对应）
+
+| 步骤 | 需求口径 | 机器实现 |
+|---|---|---|
+| ① | 设轮数 x = 总字数 ÷（上限×0.8） | `init` 打印并写入 `rounds_planned` |
+| ② | 先跑满 x 轮 | `plan` 给作业单，`tick` 记账为 `轮 n/x` |
+| ③ | 用不同方式查字数 | `count` 同时给出汉字／含全角标点／去空白／总字符／**交付 docx** 五种口径 |
+| ④ | 不够就继续补字数 | `gate` exit 1（GENERATE）→ 回到 ② |
+| ⑤ | 够了再排查问题 | `gate` 自动进入 AUDIT：编号/时间/字段/退化/地板/G10 |
+| ⑥ | 排查通过才停 | `gate` exit 0（DONE）；否则 exit 2（REPAIR/BLOCKED）→ 修完重跑 |
+
+> 注意：**跑满 x 轮不等于完成**。x 只是排期；真正的停止条件永远是 `gate` exit 0。
+
+### 1.6.3 “最严口径”原则
+
+`gate` 判定字数时取**最严的那个口径**：配置了交付物时，取 `min(源文件汉字数, docx 汉字数)`。
+这样出现“源文件够、生成的 docx 却漏了内容”时，不会被误判成达标。
+`count` 会额外报告 docx 与源文件的偏差，偏差 > 2% 直接预警。
+
+### 1.6.4 一轮的命令序列
+
+```bash
+python scripts/run_state.py next     # 看当前阶段（一句话 + 退出码）
+python scripts/run_state.py plan     # 作业单：轮次 n/x、单元数、每单元最少多少字
+python scripts/run_state.py count    # 多路核字数
+python scripts/run_state.py tick --added 9200 --units 5 --cursor 214
+python scripts/run_state.py gate     # 唯一合法的停止判据
+```
 
 ---
 
@@ -366,7 +419,7 @@ python scripts/dedupe_scan.py scenes --cross-table --out g10.txt
 
 | 脚本 | 作用 |
 |---|---|
-| `scripts/run_state.py` | **【v8 核心】停止谓词 + 轮末契约 + 吞吐升级梯**：`init / plan / tick / gate / report / resume / where` |
+| `scripts/run_state.py` | **【v9 核心】轮数契约 + 四阶段 + 停止谓词 + 轮末契约 + 吞吐升级梯**：`init / next / plan / count / tick / gate / report / resume / where` |
 | `scripts/ledger.py` | 账本初始化/更新/查询/算下一批 |
 | `scripts/build_and_verify.py` | 重建＋G2–G9 全部校验＋输出**下一批作业单** |
 | `scripts/size_report.py` | 一行命令回答"目标/当前/还差/完成度/还需几轮" |
@@ -397,10 +450,24 @@ python scripts/dedupe_scan.py scenes --cross-table --out g10.txt
 | "结尾又在问我'要不要…'" | 轮末没有契约 | 结尾只许 `✅ DONE` 或 `⏩ RESUME`（§1.5.3） |
 | "每轮都要我手动催'继续'" | 续跑责任被推给了用户 | 跑 `run_state.py resume` 拿一行指令；agent 应主动接续，用户只说"继续" |
 | "实测吞吐很低，下一轮还是老样子" | 只报告，没强制 | `tick` 自动执行吞吐升级梯（§1.5.4），块数下降、单块变长 |
+| "不知道该跑几轮" | 没有轮数契约 | `init --cap --util` 先算出 x，写进 `rounds_planned`（§1.6.1） |
+| "字数怎么算才算数" | 单一口径可自欺 | `count` 给五种口径；`gate` 取**最严**口径（§1.6.3） |
+| "跑满 x 轮了是不是就完成了" | 混淆排期与验收 | **不是**。x 只是排期；只有 `gate` exit 0 才算完成 |
+| "字数够了但有毛病，能不能先交" | 没有阶段划分 | `REPAIR` 阶段 exit 2：修完重跑，不许交 |
 
 ---
 
 ## 13. 更新日志
+
+### v9.0.0
+- **新增轮数契约**：`init --cap --util` 先算出 `x = ceil(目标 ÷ (上限×0.8))`，写进 `rounds_planned`，
+  每轮显示 `轮 n/x`。**先算排期，再开写**。
+- **新增四阶段循环**：`GENERATE → AUDIT → REPAIR → DONE`，完全对应
+  “跑满 x 轮 → 多路核字数 → 不够就补 → 够了再排查 → 全过才停”。
+- **新增多路字数核算** `count`：汉字／含全角标点／去空白／总字符／**交付 docx** 五种口径；
+  `gate` 判定时取**最严口径** `min(源文件, docx)`，防止“源文件够但 docx 漏内容”被误判达标。
+- **新增 `next`**：一句话告诉你“现在该干什么”（继续写 / 先修问题 / 允许停），并给对应退出码。
+- 回归测试扩到 **24 项断言**，覆盖轮数计算、四阶段流转、五种口径与全部负向用例。
 
 ### v8.0.1
 - **修复（重要）**：`description` 曾被撑到 1341 字符，超过 Chatbox `skills:parser` 的 **1024 字符上限**，
