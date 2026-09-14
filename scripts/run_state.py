@@ -61,7 +61,7 @@ CN_NUMS = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6,
            "七": 7, "八": 8, "九": 9, "十": 10}
 
 DEFAULTS = {
-    "version": "9.1.0",
+    "version": "9.2.0",
     "target": 0,
     "cap": 12000,               # 模型单轮输出上限（中文字符）
     "util": 0.8,                # 利用率：单轮只按 80% 计
@@ -69,6 +69,8 @@ DEFAULTS = {
     "rounds_planned": 0,        # x = ceil(target / per_round)
     "chunks_per_turn": 3,       # 一个回合里链式跑几块（受 harness 迭代上限约束）
     "turns_needed": 0,          # ≈ ceil(rounds_planned / chunks_per_turn)
+    "steps_per_window": 25,     # Chatbox Work Mode：每 25 次连续工具调用暂停一次
+    "calls_per_chunk": 2,       # 写一块大约要几次工具调用（write_file + 校验）
     "phase": "GENERATE",
     "mode": "RUN_TO_COMPLETION",
     "no_user_input": True,
@@ -485,6 +487,13 @@ def cmd_init(a):
     if a.chunks_per_turn:
         d["chunks_per_turn"] = a.chunks_per_turn
     d["turns_needed"] = int(math.ceil(d["rounds_planned"] / max(1, d["chunks_per_turn"])))
+    if a.steps_per_window:
+        d["steps_per_window"] = a.steps_per_window
+    if a.calls_per_chunk:
+        d["calls_per_chunk"] = a.calls_per_chunk
+    cw = max(1, d["steps_per_window"] // max(1, d["calls_per_chunk"]))
+    d["chunks_per_window"] = cw
+    d["windows_needed"] = int(math.ceil(d["rounds_planned"] / cw))
     d["phase"] = "GENERATE"
     d["mode"] = "RUN_TO_COMPLETION"
     d["no_user_input"] = True
@@ -508,6 +517,11 @@ def cmd_init(a):
           % (d["rounds_planned"], d["chunks_per_turn"], d["turns_needed"]))
     print("                  （不链式的话是 %d 次；链式把接续次数压到约 1/k）"
           % d["rounds_planned"])
+    print("")
+    print("  —— Chatbox Work Mode 检查点 ——")
+    print("  每 %d 次工具调用暂停一次（产品硬护栏，不可配置）" % d["steps_per_window"])
+    print("  每块约 %d 次调用 → 每个窗口可写 %d 块" % (d["calls_per_chunk"], d["chunks_per_window"]))
+    print("  **预计只需点 %d 次 Continue**" % d["windows_needed"])
     print("  扫描范围        %s ｜ 前缀 %r" % (d["glob"], d["prefix"]))
     print("  本轮每单元目标  %d 字" % d["target_cpu"])
     print("  首个作业单      python scripts/run_state.py plan --chunks %d"
@@ -721,6 +735,38 @@ def cmd_report(a):
     return 0
 
 
+def cmd_calibrate(a):
+    """用实测数据反推 cap：把"单轮输出上限"换成真实观测值，重算 x。"""
+    d = load()
+    hist = d.get("history", [])
+    if not hist:
+        print("还没有轮次记录，先跑至少一轮 tick 再校准。")
+        return 2
+    cpus = [h.get("cpu", 0) for h in hist if h.get("cpu")]
+    if not cpus:
+        print("历史记录里没有 chars_per_unit，无法校准。")
+        return 2
+    cpus.sort()
+    med = cpus[len(cpus) // 2]
+    old_cap = d["cap"]
+    old_x = d["rounds_planned"]
+    # 单块实测产出 → 反推单次回复的真实容量（块 = 一次回复的产出）
+    d["cap"] = max(500, med)
+    d["per_round"] = int(round(d["cap"] * d["util"]))
+    d["rounds_planned"] = int(math.ceil(d["target"] / max(1, d["per_round"])))
+    cw = max(1, d["steps_per_window"] // max(1, d["calls_per_chunk"]))
+    d["chunks_per_window"] = cw
+    d["windows_needed"] = int(math.ceil(d["rounds_planned"] / cw))
+    d["turns_needed"] = int(math.ceil(d["rounds_planned"] / max(1, d["chunks_per_turn"])))
+    save(d)
+    print("已按实测校准：")
+    print("  单块实测中位数   %d 字（样本 %d 块）" % (med, len(cpus)))
+    print("  单轮上限 cap     %d → %d" % (old_cap, d["cap"]))
+    print("  轮数 x           %d → %d" % (old_x, d["rounds_planned"]))
+    print("  **预计点 Continue 次数：%d**" % d["windows_needed"])
+    return 0
+
+
 def cmd_resume(a):
     print(RESUME_LINE)
     return 0
@@ -734,6 +780,9 @@ def cmd_where(a):
           % (d["rounds_planned"], d["per_round"], d["cap"], d["util"]))
     print("轮内链式：k = %d 块/回合 ｜ 需接续约 %d 次"
           % (d.get("chunks_per_turn", 1), d.get("turns_needed", 0)))
+    print("Work Mode：每 %s 次调用暂停 ｜ 每窗口 %s 块 ｜ 预计点 %s 次 Continue"
+          % (d.get("steps_per_window"), d.get("chunks_per_window", 0),
+             d.get("windows_needed", 0)))
     print("阶段：%s ｜ 扫描：%s ｜ 前缀：%r" % (d["phase"], d.get("glob"), d.get("prefix")))
     print("目标：%s ｜ 地板：%s ｜ 本轮每单元目标：%s"
           % (d.get("target"), d.get("floors"), d.get("target_cpu")))
@@ -750,6 +799,10 @@ def main():
     p.add_argument("--util", type=float, default=0.8, help="利用率，默认 0.8")
     p.add_argument("--chunks-per-turn", type=int, default=3, dest="chunks_per_turn",
                    help="一个回合里链式跑几块（默认 3）")
+    p.add_argument("--steps-per-window", type=int, default=25, dest="steps_per_window",
+                   help="Work Mode 每多少次工具调用暂停一次（默认 25）")
+    p.add_argument("--calls-per-chunk", type=int, default=2, dest="calls_per_chunk",
+                   help="写一块大约几次工具调用（默认 2）")
     p.add_argument("--glob", action="append")
     p.add_argument("--prefix", default=None)
     p.add_argument("--floors", default="")
@@ -764,7 +817,8 @@ def main():
             p.add_argument("--chunks", type=int, default=1,
                            help="打印 N 块的连续作业单（轮内链式续跑）")
 
-    for name, fn in (("resume", cmd_resume), ("where", cmd_where)):
+    for name, fn in (("resume", cmd_resume), ("where", cmd_where),
+                     ("calibrate", cmd_calibrate)):
         p = sp.add_parser(name); p.set_defaults(f=fn)
 
     p = sp.add_parser("tick"); p.set_defaults(f=cmd_tick)
