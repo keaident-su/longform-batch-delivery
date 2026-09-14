@@ -53,6 +53,28 @@ python scripts/run_state.py init --target 170000 --cap 12000 --util 0.8 --chunks
 > Honest limits: k is bounded by the harness iteration cap, so the figure is approximate.
 > And **x — the total output volume — cannot be compressed at all**; only hand-offs can.
 
+### v9.2: the real boundary, verified
+
+Chatbox's own docs state that **Work Mode is already a loop** (think → call tool → read result →
+repeat until done). The only hard boundary is:
+
+> it automatically pauses after **25 consecutive tool calls** so you can check it is on track, then continue.
+
+That threshold is **not configurable**. So v9.2 does three things:
+
+1. **Tightens iron rule 8**: emit no message between chunks; **all prose goes to disk through `write_file`**
+   (every write is a tool call, so the loop keeps running).
+2. **Requires Work Mode**: Chat Mode injects no tools, so there is no loop at all.
+3. **Computes the click count**: `init` prints "expected Continue clicks: N"; if reality differs,
+   run `calibrate` to recompute x and the window count from measured data.
+
+| Problem | Fixable? |
+|---|---|
+| Stopping between chunks | ✅ iron rule 8 |
+| Running long jobs in Chat Mode | ✅ Work Mode is mandatory |
+| The 25-step pause | ❌ product guardrail — just click Continue |
+| Total output volume x | ❌ content volume, not compressible |
+
 ## What's new in v8 — the anti-early-exit release
 
 Every earlier version taught you how to write *well*. None of them could **stop you from declaring victory early.**
