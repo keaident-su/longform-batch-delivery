@@ -1,0 +1,14 @@
+{
+  "target": 170000,
+  "unit": "cjk_chars",
+  "calibrated": { "chars_per_block": 0, "chars_per_round": 0 },
+  "current_total": 0,
+  "remaining": 170000,
+  "progress_pct": 0.0,
+  "cursor": { "chapter": 0, "scene": 0 },
+  "floors": { "main": 700, "supp": 500 },
+  "file_prefixes": ["act4_"],
+  "done": false,
+  "checks": {},
+  "note": "example ledger; run scripts/ledger.py init to create a real one"
+}
