@@ -1,4 +1,4 @@
-# 轮末契约卡片（LFBD v8）
+# 轮末契约卡片（LFBD v9）
 
 > 把这张卡片复制到项目根，命名 `TURN_CONTRACT.md`。
 > 每轮开工前读一遍；每轮收工前对照最后三行自检。
@@ -10,37 +10,65 @@
 ```
 mode            = RUN_TO_COMPLETION
 no_user_input   = true
+rounds_planned  = x        # 见下方"轮数契约"
 ```
 
-含义：用户已经下过"全部写完"的总指令。**此后每一轮都不需要再征求任何确认。**
+含义：用户已下过"全部写完"的总指令。**此后每一轮都不需要再征求任何确认。**
 唯一合法的停止条件是 `run_state.py gate` 返回 **exit 0**。
 
 ---
 
-## 二、每轮固定动作（顺序不许变）
+## 二、轮数契约
+
+```
+x = ceil(目标字数 ÷ (单轮输出上限 × 0.8))
+```
+
+例：目标 170,000 字、单轮上限 12,000 字 → `x = ceil(170000 ÷ 9600) = 18 轮`。
+
+**先跑满 x 轮**（`轮 n/x` 每轮显示）。跑满 x 轮 **不等于** 完成——
+x 只是排期，验收永远看 `gate`。
+
+---
+
+## 三、每轮固定动作（顺序不许变）
 
 ```
 1. python scripts/run_state.py where      # 一屏看清当前口径（换会话必跑）
-2. python scripts/run_state.py plan       # 拿作业单：单元数 × 每单元字数
-3. 按作业单写，落盘（只写源文件，正文不进聊天）
-4. python scripts/run_state.py tick --added <新增字数> --units <单元数> --cursor <最新编号>
-5. python scripts/run_state.py gate
-6. 看退出码 → 决定结尾写什么
+2. python scripts/run_state.py next       # 现在处于哪个阶段、该干什么
+3. python scripts/run_state.py plan       # 作业单：轮次 n/x、单元数 × 每单元最少字数
+4. 按作业单写，落盘（只写源文件，正文不进聊天）
+5. python scripts/run_state.py count      # 多路核字数（汉字/含标点/去空白/docx）
+6. python scripts/run_state.py tick --added <新增字数> --units <单元数> --cursor <最新编号>
+7. python scripts/run_state.py gate
+8. 看退出码 → 决定结尾写什么
 ```
 
 ---
 
-## 三、结尾写什么（二选一，没有第三种）
+## 四、四个阶段
+
+| 阶段 | 触发 | exit | 该做什么 |
+|---|---|---|---|
+| `GENERATE` | 字数未达标 | 1 | 继续写。禁止宣布完成 |
+| `AUDIT` | 字数刚达标 | — | 跑全部闸门（`gate` 自动执行） |
+| `REPAIR` | 字数达标但有形式问题 | 2 | 按清单修，不写新内容 |
+| `BLOCKED` | 重号／G10 冲突／交付物损坏 | 2 | 先处理，再重跑 |
+| `DONE` | 全过 | 0 | 才可以停 |
+
+---
+
+## 五、结尾写什么（二选一，没有第三种）
 
 | gate 退出码 | 状态 | 结尾必须写 |
 |---|---|---|
 | **0** | DONE | `✅ DONE` + 一句"目标/当前/闸门全过/交付物" |
-| **1** | RUNNING | `⏩ RESUME` + `run_state.py resume` 的原文 |
-| **2** | BLOCKED | 先修问题 → **修完接着跑** → 结尾同样写 `⏩ RESUME` |
+| **1** | GENERATE | `⏩ RESUME` + `run_state.py resume` 的原文 |
+| **2** | REPAIR / BLOCKED | 先修问题 → **修完接着跑** → 结尾同样写 `⏩ RESUME` |
 
 ---
 
-## 四、禁止清单（出现任意一条 = 本轮违规）
+## 六、禁止清单（出现任意一条 = 本轮违规）
 
 - ❌ 任何提问：`要不要…`／`需要我继续吗？`／`可以吗？`
 - ❌ 任何条件式征询：`如果你想…回我一句'继续'`／`你希望先出哪一册？`
@@ -50,7 +78,7 @@ no_user_input   = true
 
 ---
 
-## 五、收工前最后三行自检
+## 七、收工前最后三行自检
 
 ```
 [ ] run_state.py gate 的退出码是 0 吗？不是 → 回去写。
