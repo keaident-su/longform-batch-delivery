@@ -57,7 +57,7 @@ CN_NUMS = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6,
            "七": 7, "八": 8, "九": 9, "十": 10}
 
 DEFAULTS = {
-    "version": "8.0.0",
+    "version": "8.0.1",
     "target": 0,
     "mode": "RUN_TO_COMPLETION",       # 用户在本项目中已下过"全部写完"的总指令
     "no_user_input": True,             # 轮末禁止提问/征询
