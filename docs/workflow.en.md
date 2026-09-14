@@ -40,6 +40,44 @@ python scripts/run_state.py resume   # prints the continuation line
 
 ---
 
+## 0.6 Round contract & four phases (v9)
+
+### The round contract
+
+```bash
+python scripts/run_state.py init --target 170000 --cap 12000 --util 0.8
+```
+
+```
+x = ceil(170000 ÷ (12000 × 0.8)) = ceil(170000 ÷ 9600) = 18 rounds
+```
+
+`--cap` = the per-turn output cap (CJK chars, default 12000); `--util` defaults to 0.8.
+x is stored as `rounds_planned` and every round shows `round n/x`.
+**Running x rounds is not completion** — only `gate` exit 0 is.
+
+### The four phases
+
+| Phase | Trigger | exit | Action |
+|---|---|---|---|
+| `GENERATE` | Below target | 1 | Keep writing; never claim done |
+| `AUDIT` | Target just met | — | Run all gates (`gate` does this) |
+| `REPAIR` | Formal issues | 2 | Fix from the list; write no new content |
+| `BLOCKED` | Duplicate ID / G10 / broken artifact | 2 | Fix first, then re-run |
+| `DONE` | All clear | 0 | You may stop |
+
+### Multi-method volume check (strictest wins)
+
+```bash
+python scripts/run_state.py count
+```
+
+Five measurements: CJK / CJK+punctuation / non-space / total / built docx.
+`gate` uses **`min(source CJK, docx CJK)`**, so "sources long enough but the docx lost content"
+cannot be mistaken for done.
+
+---
+
 ## 1. Skeleton first
 
 Write only the skeleton: one line per unit — `ID + one-sentence anchor + planned chars`. Get it confirmed, then fill prose only. **Never change IDs or order while filling.**
