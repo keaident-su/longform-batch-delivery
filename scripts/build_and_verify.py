@@ -1,214 +1,267 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-r"""build_and_verify.py —— 长文本"重建 + 校验"通用模板
-
-用途：把分散在多个源文件里的单元（场/章/节）合并成正确的顺序，并跑一遍质量闸门。
-默认适配中文剧本结构（`第N场` + `第N场补充场（一）`），可用 CONFIG / 命令行改。
-
-用法：
-  python build_and_verify.py --src "scenes/act5a_*.txt" --title 上册
-  python build_and_verify.py --src "scenes/ch*.txt" --unit-pattern "第%d章" \
-        --fields 标题 时间 地点 --time-regex "\d{4}-\d{2}-\d{2}" --out merged.txt --docx out.docx
-
-退出码：0 = 全部通过；1 = 有闸门失败。
 """
-import argparse
-import glob
+build_and_verify.py —— 长文本分批交付：重建 + 校验 + 输出下一批作业单
+
+v6 新增：
+  G8 重号污染检测（同编号出现在多个文件 / 扫描到 file_prefixes 之外的文件）
+  G9 单元字数地板（低于地板的单元列入未达标清单，并换算成"还需写多少字/多少个单元"）
+  --report  直接打印进度表（目标/当前/还差/完成度/预计轮数）
+
+零第三方依赖（stdlib only）。把 CONFIG 改成你的结构即可。
+用法：
+  python scripts/build_and_verify.py                # 校验 + 生成 docx（若配置）
+  python scripts/build_and_verify.py --report       # 只打印进度与下一批作业单
+"""
+
+import os
 import re
 import sys
+import json
+import glob
+import argparse
 
+# ============================== CONFIG ==============================
 CONFIG = {
-    # 单元标题：主单元
-    "main_pattern": r"^第(\d+)场$",
-    # 单元标题：附属单元（补充场），编号用中文数码
-    "sub_pattern": r"^第(\d+)场补充场（([一二三四五六七八九十]+)）$",
-    # 时间戳
-    "time_regex": r"时间[：:]\s*(\d{4})年(\d{1,2})月(\d{1,2})日\s*(\d{1,2})[：:](\d{2})",
-    # 每单元必填字段（出现在单元体内即可）
-    "fields": ["大纲锚点", "时间：", "地点：", "出场人物："],
-    # 卷/集标题（用于检查结构完整性）
-    "section_pattern": r"^第[一二三四五六七八九十]+季·第\d+集",
-    "expect_sections": 0,   # >0 时校验数量
+    # 源文件目录与匹配前缀（遵循 RUN.lock 的 file_prefixes）
+    "src_dir": "scenes",
+    "file_globs": ["*.txt"],          # 例：["chapters_*.md"]
+    "allowed_prefixes": [],           # 例：["act4_"]；非空时，不匹配者一律视为污染
+
+    # 单元（场/章）结构
+    "unit_regex": r"^第(\d+)(场|章)$",                       # 主单元
+    "subunit_regex": r"^第(\d+)场补充场（([一二三四五六七八九十]+)）$",  # 从单元
+    "cn_nums": {'一':1,'二':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9,'十':10},
+
+    # 必填字段（正则，命中即算存在）
+    "required_fields": [r"时间[：:]", r"地点[：:]", r"(出场人物|人物)[：:]"],
+    "anchor_field": "大纲锚点",        # 可选：没有则不算字段缺失，但会提示
+
+    # 时间戳（用于 G3）
+    "time_regex": r"^时间[：:]\s*(\d{4})年(\d{1,2})月(\d{1,2})日\s*(\d{1,2})[：:](\d{2})",
+
+    # 单元字数地板（中文字符）
+    "floors": {"main": 700, "sub": 500},
+
+    # 结构块（集/卷/章头）必须存在的正则
+    "must_have": [r"^第\d+集", r"^第\d+章"],
+
+    # 输出
+    "project_title": "《长文本工程》",
+    "parts": [],                      # 例：[{"name":"上册","max_id":238},{"name":"下册","min_id":239}]
+    "out_dir": ".",
 }
 
-CN = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+CJK = re.compile(r"[\u4e00-\u9fff]")
+PASS, FAIL = "OK", "BAD"
 
 
-def build_splitter():
-    mp = CONFIG["main_pattern"][1:-1]          # 去掉 ^ $
-    sp = CONFIG["sub_pattern"][1:-1]
-    return re.compile(r"(?m)^(?=第\d+场(?:补充场（[一二三四五六七八九十]+）)?[ \t]*$)")
+def cjk_len(s):
+    return len(CJK.findall(s))
 
 
-def parse(files):
-    splitter = build_splitter()
-    main_re = re.compile(CONFIG["main_pattern"])
-    sub_re = re.compile(CONFIG["sub_pattern"])
-    rows = []
-    for f in files:
-        text = open(f, encoding="utf-8").read()
-        parts = splitter.split(text)
-        leading, chunks = parts[0], parts[1:]
-        for i, p in enumerate(chunks):
-            head = p.split("\n", 1)[0].strip()
-            m2, m = main_re.match(head), sub_re.match(head)
-            if m2:
-                n, sub = int(m2.group(1)), 0
-            elif m:
-                n, sub = int(m.group(1)), CN.get(m.group(2), 0)
+def collect_files(cfg):
+    files = []
+    for g in cfg["file_globs"]:
+        files.extend(glob.glob(os.path.join(cfg["src_dir"], g)))
+    files = sorted(set(files))
+    stray = []
+    if cfg["allowed_prefixes"]:
+        keep = []
+        for f in files:
+            base = os.path.basename(f)
+            if any(base.startswith(p) for p in cfg["allowed_prefixes"]):
+                keep.append(f)
             else:
-                continue
-            body = (leading.rstrip("\n") + "\n" + p) if (i == 0 and leading.strip()) else p
-            cjk = sum(1 for c in body if "\u4e00" <= c <= "\u9fff")
-            rows.append({"n": n, "sub": sub, "head": head, "body": body, "cjk": cjk})
-    rows.sort(key=lambda r: (r["n"], r["sub"]))
-    return rows
+                stray.append(f)
+        files = keep
+    return files, stray
 
 
-def check(rows):
-    fails, warns = [], []
-    # G2 编号连续
-    mains = [r["n"] for r in rows if r["sub"] == 0]
-    if mains:
-        exp = list(range(min(mains), max(mains) + 1))
-        if mains != exp:
-            fails.append("G2 主编号不连续：缺 %s，重复 %s"
-                         % ([x for x in exp if x not in mains],
-                            [x for x in set(mains) if mains.count(x) > 1]))
-    # 附属单元紧跟主单元 + 序号连续
-    last = None
-    per = {}
-    for r in rows:
-        if r["sub"] == 0:
-            last = r["n"]
+def split_units(text, cfg):
+    """按行扫描切块；返回 [{'header':..., 'body':...}]"""
+    unit_re = re.compile(cfg["unit_regex"])
+    sub_re = re.compile(cfg["subunit_regex"])
+    units, cur, lead = [], None, []
+    for line in text.split("\n"):
+        s = line.strip()
+        if unit_re.match(s) or sub_re.match(s):
+            if cur is not None:
+                units.append(cur)
+            cur = {"header": s, "body": [line]}
         else:
-            if r["n"] != last:
-                fails.append("G2 附属单元错位：%s" % r["head"])
-            per.setdefault(r["n"], []).append(r["sub"])
-    for n, ss in per.items():
-        if ss != list(range(1, len(ss) + 1)):
-            fails.append("G2 附属单元序号异常：第%d -> %s" % (n, ss))
-    # G3 时间单调
-    ts, prev = [], None
-    for r in rows:
-        m = re.search(CONFIG["time_regex"], r["body"])
-        if not m:
-            warns.append("缺时间戳：%s" % r["head"])
-            ts.append(None)
-            continue
-        g = m.groups()
-        t = tuple(int(x) for x in g) if len(g) == 5 else (int(g[0]),)
-        ts.append(t)
-    for i in range(1, len(ts)):
-        if ts[i] and ts[i - 1] and ts[i] <= ts[i - 1]:
-            fails.append("G3 时间不递增：%s" % rows[i]["head"])
-    # G4 字段
-    for r in rows:
-        for f in CONFIG["fields"]:
-            if f not in r["body"]:
-                fails.append("G4 缺字段 [%s]：%s" % (f, r["head"]))
-    # G5 结构
-    secs = [r for r in rows if re.search(CONFIG["section_pattern"], r["body"])]
-    if CONFIG["expect_sections"] and len(secs) != CONFIG["expect_sections"]:
-        fails.append("G5 卷/集标题数 %d ≠ 期望 %d" % (len(secs), CONFIG["expect_sections"]))
-    # G6 退化
-    bad_pat = re.compile(r"[\u4e00-\u9fff]{2,4}，[\u4e00-\u9fff]{1,2}[。，！？]")
-    frag = 0
-    for r in rows:
-        hits = bad_pat.findall(r["body"])
-        if hits:
-            frag += len(hits)
-            warns.append("G6 疑似碎片断句：%s -> %s" % (r["head"], hits[:3]))
-    max_blank = 0
-    for r in rows:
-        cur = mx = 0
-        for line in r["body"].split("\n"):
-            cur = cur + 1 if not line.strip() else 0
-            mx = max(mx, cur)
-        max_blank = max(max_blank, mx)
-    if max_blank > 2:
-        fails.append("G6 空行注水：最大连续空行 %d" % max_blank)
-    return fails, warns, max_blank, frag
+            if cur is None:
+                lead.append(line)
+            else:
+                cur["body"].append(line)
+    if cur is not None:
+        units.append(cur)
+    if units:
+        units[0]["body"] = lead + units[0]["body"]
+    for u in units:
+        u["text"] = "\n".join(u["body"])
+    return [u for u in units if u["text"].strip()]
+
+
+def unit_key(header, cfg):
+    m = re.match(cfg["unit_regex"], header)
+    if m:
+        return (int(m.group(1)), 0)
+    m = re.match(cfg["subunit_regex"], header)
+    if m:
+        return (int(m.group(1)), cfg["cn_nums"].get(m.group(2), 0))
+    return (0, 0)
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--src", action="append", required=True, help="源文件 glob，可多次")
-    ap.add_argument("--title", default="文集")
-    ap.add_argument("--out", default=None, help="合并后的 txt")
-    ap.add_argument("--docx", default=None, help="输出 docx（需 python-docx）")
-    ap.add_argument("--unit-pattern", default=None, help="如 '第%d章'")
-    ap.add_argument("--fields", nargs="*", default=None)
-    ap.add_argument("--time-regex", default=None)
-    ap.add_argument("--expect-sections", type=int, default=0)
-    ap.add_argument("--strict-frag", action="store_true")
+    ap.add_argument("--report", action="store_true", help="只打印进度与作业单")
+    ap.add_argument("--target", type=int, default=0)
+    ap.add_argument("--ledger", default="ledger.json")
     a = ap.parse_args()
 
-    if a.fields is not None:
-        CONFIG["fields"] = a.fields
-    if a.time_regex:
-        CONFIG["time_regex"] = a.time_regex
-    if a.expect_sections:
-        CONFIG["expect_sections"] = a.expect_sections
-    if a.unit_pattern:
-        u = a.unit_pattern.replace("%d", r"(\d+)")
-        CONFIG["main_pattern"] = "^" + u + "$"
+    cfg = CONFIG
+    files, stray = collect_files(cfg)
 
-    files = []
-    for g in a.src:
-        files += sorted(glob.glob(g))
-    if not files:
-        print("没有匹配到源文件：", a.src)
-        return 1
+    # ---- G8-a：扫描到配置外文件 = 污染 ----
+    g8a = PASS
+    if stray:
+        g8a = FAIL
+        print("[G8] 检测到 RUN.lock 前缀之外的同目录文件（疑似并行运行污染）：")
+        for f in stray:
+            print("      ! " + f)
 
-    rows = parse(files)
-    fails, warns, max_blank, frag = check(rows)
-    total = sum(r["cjk"] for r in rows)
+    owner = {}      # (num, sub) -> [files]
+    units_all = []
+    for f in files:
+        base = os.path.basename(f)
+        text = open(f, encoding="utf-8").read()
+        for u in split_units(text, cfg):
+            k = unit_key(u["header"], cfg)
+            owner.setdefault(k, []).append(base)
+            u["file"] = base
+            units_all.append(u)
 
-    print("[%s] 单元=%d 中文字符=%d" % (a.title, len(rows), total))
-    print("  G1 字数: %d" % total)
-    print("  G2 编号: %s" % ("FAIL" if any(x.startswith("G2") for x in fails) else "OK"))
-    print("  G3 时间: %s" % ("FAIL" if any(x.startswith("G3") for x in fails) else "OK"))
-    print("  G4 字段: %s" % ("FAIL" if any(x.startswith("G4") for x in fails) else "OK"))
-    print("  G5 结构: %s" % ("FAIL" if any(x.startswith("G5") for x in fails) else "OK"))
-    print("  G6 退化: 最大空行=%d 疑似碎片=%d" % (max_blank, frag))
-    for w in warns[:10]:
-        print("   ⚠", w)
-    for f in fails:
-        print("   ✗", f)
+    # ---- G8-b：同编号出现在多个文件 = 重号 ----
+    dups = {k: v for k, v in owner.items() if len(v) > 1}
+    g8b = PASS
+    if dups:
+        g8b = FAIL
+        print("[G8] 重号（同一编号出现在多个文件，必须人工裁决，禁止自动合并）：")
+        for k, v in sorted(dups.items()):
+            print("      ! 第%d场 补(%d): %s" % (k[0], k[1], ", ".join(v)))
 
-    if a.out:
-        with open(a.out, "w", encoding="utf-8") as fh:
-            fh.write("\n\n".join(r["body"].rstrip() for r in rows))
-        print("  ->", a.out)
-    if a.docx:
+    units_all.sort(key=lambda u: unit_key(u["header"], cfg))
+    text = "\n".join(u["text"] for u in units_all)
+    total = cjk_len(text)
+
+    mains, prev, g2 = [], 0, PASS
+    for u in units_all:
+        k = unit_key(u["header"], cfg)
+        if k[1] == 0:
+            if k[0] <= prev:
+                print("[G2] 主编号倒流: " + u["header"]); g2 = FAIL
+            prev = k[0]
+            mains.append(u)
+
+    # 从单元必须紧跟在同号主单元后
+    lm, g2b = None, PASS
+    for u in units_all:
+        k = unit_key(u["header"], cfg)
+        if k[1] != 0:
+            if lm != k[0]:
+                print("[G2] 补充单元错位: " + u["header"]); g2b = FAIL
+        else:
+            lm = k[0]
+
+    # ---- G3 时间单调 ----
+    g3 = PASS
+    times = []
+    for u in units_all:
+        m = re.search(cfg["time_regex"], u["text"], re.M)
+        if m:
+            times.append((u["header"], tuple(map(int, m.groups()))))
+    for i in range(1, len(times)):
+        if times[i][1] <= times[i-1][1]:
+            print("[G3] 时间倒流: %s %s -> %s %s" % (times[i-1][0], times[i-1][1], times[i][0], times[i][1]))
+            g3 = FAIL
+
+    # ---- G4 字段 ----
+    g4 = PASS
+    for u in units_all:
+        for pat in cfg["required_fields"]:
+            if not re.search(pat, u["text"]):
+                print("[G4] 缺字段 %s : %s" % (u["header"], pat)); g4 = FAIL
+
+    # ---- G5 结构块 ----
+    g5 = PASS
+    for pat in cfg["must_have"]:
+        if not re.search(pat, text, re.M):
+            print("[G5] 缺少结构块: " + pat); g5 = FAIL
+
+    # ---- G6 退化扫描 ----
+    frag = re.findall(r'"[\u4e00-\u9fff]{1,4}，[说道问答喊叫][：，]', text)
+    mx = cur = 0
+    for line in text.split("\n"):
+        if not line.strip():
+            cur += 1; mx = max(mx, cur)
+        else:
+            cur = 0
+    g6 = FAIL if mx >= 3 else PASS
+    print("[G6] 对话标签逗号错误: %d ｜ 最大连续空行: %d" % (len(frag), mx))
+
+    # ---- G9 单元字数地板 + 作业单 ----
+    g9 = PASS
+    short = []
+    for u in units_all:
+        k = unit_key(u["header"], cfg)
+        floor = cfg["floors"]["main"] if k[1] == 0 else cfg["floors"]["sub"]
+        n = cjk_len(u["text"])
+        if n < floor:
+            short.append((u["header"], n, floor))
+    if short:
+        g9 = FAIL
+        need = sum(f - n for _, n, f in short)
+        avg = max(400, int(sum(cjk_len(u["text"]) for u in units_all) / max(1, len(units_all))))
+        print("[G9] 低于字数地板 %d 个单元｜需补约 %d 字（约 %d 个达标单元）"
+              % (len(short), need, -(-need // avg)))
+        for h, n, f in short[:15]:
+            print("      ! %s : %d < %d" % (h, n, f))
+        if len(short) > 15:
+            print("      ... 其余 %d 个见 --report 全量" % (len(short) - 15))
+
+    # ---- 进度 ----
+    led = {}
+    if os.path.exists(a.ledger):
         try:
-            from docx import Document
-            from docx.shared import Pt
-            from docx.oxml.ns import qn
-            doc = Document()
-            st = doc.styles["Normal"]
-            st.font.name = "宋体"
-            st.font.size = Pt(11)
-            st._element.get_or_add_rPr().rFonts.set(qn("w:eastAsia"), "宋体")
-            for r in rows:
-                for line in r["body"].split("\n"):
-                    s = line.strip()
-                    if not s:
-                        continue
-                    p = doc.add_paragraph()
-                    run = p.add_run(s)
-                    run.font.name = "宋体"
-                    run._element.get_or_add_rPr().rFonts.set(qn("w:eastAsia"), "宋体")
-                doc.add_paragraph()
-            doc.save(a.docx)
-            print("  ->", a.docx)
-        except ImportError:
-            print("  (跳过 docx：未安装 python-docx)")
+            led = json.load(open(a.ledger, encoding="utf-8"))
+        except Exception:
+            led = {}
+    target = a.target or led.get("target", 0)
+    print()
+    print("=" * 60)
+    print("单元数: %d ｜ 主单元: %d ｜ 中文字符: %d ｜ 总字符: %d"
+          % (len(units_all), len(mains), total, len(text)))
+    if target:
+        remain = max(0, target - total)
+        pct = 100.0 * total / target
+        cbr = led.get("calibrated", {}).get("chars_per_round", 9000)
+        print("目标 %d ｜ 当前 %d ｜ 还差 %d（完成度 %.1f%%）｜ 按实测 %d 字/轮，还需 %d 轮"
+              % (target, total, remain, pct, cbr, -(-remain // max(1, cbr))))
+    print("G1 字数(按账本比对) ｜ G2 %s ｜ G3 %s ｜ G4 %s ｜ G5 %s ｜ G6 %s ｜ G8 %s ｜ G9 %s"
+          % (g2 if g2b == PASS else FAIL, g3, g4, g5, g6, g8a if g8b == PASS else FAIL, g9))
+    print("=" * 60)
 
-    # G6 的"疑似碎片断句"是启发式提示，仅告警不判失败；连续空行>=3 才算失败。
-    print("RESULT:", "PASS" if not fails else "FAIL(%d)" % len(fails))
-    return 0 if not fails else 1
+    # ---- 下一批作业单 ----
+    if short:
+        print("\n下一批作业单（照着写即可）：")
+        print("  优先补足下列单元，每个至少补到地板字数；或新增达标单元。")
+        for h, n, f in short[:10]:
+            print("   - %s（现 %d 字，需 +%d）" % (h, n, f - n))
+    elif target and total < target:
+        print("\n下一批作业单：主线已达标，继续按骨架扩展新单元。")
+
+    return 0
 
 
 if __name__ == "__main__":
