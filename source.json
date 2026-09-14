@@ -1,7 +1,7 @@
 {
   "type": "chat",
   "name": "longform-batch-delivery",
-  "version": "9.2.0",
+  "version": "10.0.0",
   "repo": "https://github.com/keaident-su/longform-batch-delivery",
   "license": "MIT",
   "lang": ["zh-CN", "en"],
