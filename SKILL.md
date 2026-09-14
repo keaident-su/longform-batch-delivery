@@ -1,6 +1,6 @@
 ---
 name: longform-batch-delivery
-version: 8.0.0
+version: 8.0.1
 description: |
   长文本分批交付协议（LFBD）。用于任何"一次性写不完"的超长产出（十几万字的小说/剧本/报告/多卷文档）。
   v8 核心：把"完成"变成退出码——scripts/run_state.py gate 返回 0=DONE／1=继续写／2=先修问题，
@@ -401,6 +401,12 @@ python scripts/dedupe_scan.py scenes --cross-table --out g10.txt
 ---
 
 ## 13. 更新日志
+
+### v8.0.1
+- **修复（重要）**：`description` 曾被撑到 1341 字符，超过 Chatbox `skills:parser` 的 **1024 字符上限**，
+  导致技能解析失败、被摘出启用列表（现象：**“技能不见了”**）。已压缩到 743 字符。
+  自查命令见 `_selftest/fix_desc.py`；恢复启用项见 `_selftest/restore_enabled.py`。
+  **写 description 时务必控制在 1024 字符以内（留余量，≤900 更安全）。**
 
 ### v8.0.0
 - **新增停止谓词（M1）**：`scripts/run_state.py gate`，退出码 `0=DONE / 1=RUNNING / 2=BLOCKED`。
