@@ -1,7 +1,8 @@
-# longform-batch-delivery · 长文本分批交付协议 (LFBD v8)
+# longform-batch-delivery · 长文本分批交付协议 (LFBD v9)
 
 > **一句话**：先测产出、再排期；每轮都有账本；差多少永远秒答；不许用短段落注水。
 > **v8 一句话**：**"完成"不是你说了算，是退出码说了算**（`run_state.py gate` exit 0）。
+> **v9 一句话**：**先把轮数算出来**（x = 目标 ÷ 上限×0.8），再按 GENERATE→AUDIT→REPAIR→DONE 转，非 DONE 不停。
 > **One-liner**: calibrate throughput first, keep a disk ledger, always know the exact shortfall, never pad with stub units.
 > **v8**: "done" is an **exit code** — `0=DONE, 1=keep writing, 2=fix first`. Never end a turn with a question.
 
@@ -31,8 +32,11 @@ v5 收到最多的抱怨是："我用了这个技能，怎么还是没写完？"
 ```bash
 # 0) 放好你的源目录，比如 scenes/
 # ---- 【v8 主路线】停止谓词驱动：跑到 exit 0 为止，中途不问不倚 ----
-python scripts/run_state.py init --target 170000 --glob "scenes/act4*_*.txt" --prefix act4
-python scripts/run_state.py plan     # 拿作业单：写几个单元、每单元至少多少字
+python scripts/run_state.py init --target 170000 --cap 12000 --util 0.8 \
+    --glob "scenes/act4*_*.txt" --prefix act4
+python scripts/run_state.py next     # 当前阶段 + 该干什么（exit 1=继续写 / 2=先修 / 0=可停）
+python scripts/run_state.py plan     # 作业单：轮次 n/x、单元数、每单元最少多少字
+python scripts/run_state.py count    # 多路核字数（汉字/含标点/去空白/docx）
 #   ……写正文，落盘（正文不进聊天）……
 python scripts/run_state.py tick --added 9200 --units 5 --cursor 214
 python scripts/run_state.py gate     # 退出码 0=DONE ／ 1=继续写 ／ 2=先修问题
@@ -54,6 +58,34 @@ python scripts/size_report.py --dir scenes --glob "*.txt" --target 170000
 # 5) 【v7】内容级检查：重复/事实冲突/跨来源拼接（带逐场对照表）
 python scripts/dedupe_scan.py scenes --cross-table --out g10.txt
 ```
+
+---
+
+## v9 相对 v8 新增了什么（把"跑几轮"先算出来）
+
+v8 能拦住"提前收工"，但它没回答一个前置问题：**这活儿一共要跑几轮？**
+
+v9 把它变成契约：
+
+```
+x = ceil(目标字数 ÷ (单轮输出上限 × 0.8))
+```
+
+目标 17 万字、单轮上限 12,000 字 → `x = ceil(170000 ÷ 9600) = 18 轮`。
+
+| 步骤 | 机器实现 |
+|---|---|
+| ① 设轮数 x | `init --cap 12000 --util 0.8` → 写入 `rounds_planned` |
+| ② 先跑满 x 轮 | `plan` 给作业单；`tick` 记 `轮 n/x` |
+| ③ 多方式查字数 | `count`：汉字／含全角标点／去空白／总字符／交付 docx |
+| ④ 不够就补 | `gate` exit 1（GENERATE）→ 继续写 |
+| ⑤ 够了再排查 | `gate` 自动进入 AUDIT |
+| ⑥ 全过才停 | `gate` exit 0（DONE），否则 exit 2（REPAIR / BLOCKED） |
+
+新增 `next`：一句话告诉你现在是哪个阶段、该干什么。
+
+**最严口径**：`gate` 判字数时取 `min(源文件汉字, docx 汉字)`——
+"源文件够、生成的 docx 却漏内容"不会再被误判成达标。
 
 ---
 
@@ -122,7 +154,7 @@ v6 的 G1–G9 全部是**形式**闸门（字数/编号/时间/字段/结构/�
 | **G8 重号污染** | 同编号不出现在两个文件；扫描范围外文件=污染 |
 | **G9 单元地板** | 每单元字数 ≥ 地板，并输出补写清单 |
 | **G10 内容重复/事实冲突** | 无逐字重复段落；同场各块事实不打架；补充场不换词重写主场次；正文日期不与时间字段脱节（`dedupe_scan.py`） |
-| **P0 停止谓词（v8）** | `run_state.py gate` 退出码 `0=DONE / 1=RUNNING / 2=BLOCKED`；**非 0 即不许停、不许写"完成"** |
+| **P0 停止谓词（v8+）** | `run_state.py gate` 退出码 `0=DONE / 1=GENERATE / 2=REPAIR｜BLOCKED`；**非 0 即不许停、不许写"完成"** |
 
 ---
 
@@ -134,7 +166,7 @@ README.md / README.en.md      中英文说明
 docs/workflow.zh.md           中文工作流
 docs/workflow.en.md           English workflow
 scripts/ledger.py             账本：init / update / show / next
-scripts/run_state.py          【v8】停止谓词 + 轮末契约 + 吞吐升级梯
+scripts/run_state.py          【v9】轮数契约 + 四阶段 + 停止谓词 + 轮末契约 + 吞吐升级梯
 scripts/build_and_verify.py   重建 + G2–G9 + 下一批作业单（`--strict` 可作停止谓词）
 scripts/size_report.py        目标/当前/还差/完成度/还需几轮
 scripts/publish_github.py     推送技能到 GitHub（UTF-8 安全）
@@ -153,6 +185,7 @@ _selftest/selftest.py         【v8】停止谓词回归测试（12 项断言）
 - **铁律 4**：用户说"全部写完"时，一轮内连续跑批，不问"要继续吗"。
 - **铁律 5**：**"完成"必须由退出码证明**——`run_state.py gate` 非 0 不得收工。
 - **铁律 6**：**轮末只许两种结尾**——`✅ DONE` 或 `⏩ RESUME`，禁止任何提问。
+- **铁律 7**：**先算轮数再开写**——`x = ceil(目标 ÷ (单轮上限×0.8))`；但跑满 x 轮 ≠ 完成，验收只看 `gate`。
 - **骨架先行**：先出全量骨架（编号＋一句锚点＋计划字数），再逐段填正文，填的时候不许改编号。
 - **断点续写**：用户只说"继续"时，读账本 → 取游标 → 按实测吞吐算范围 → 直接写，不重问需求。
 
