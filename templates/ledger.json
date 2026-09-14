@@ -1,21 +1,38 @@
 {
   "target": 170000,
   "unit": "cjk_chars",
-  "per_batch_budget": 10000,
-  "batches_planned": 17,
-  "batches_done": 0,
   "current_total": 0,
-  "cursor": {
-    "chapter": 9,
-    "scene": 242
+  "remaining": 170000,
+  "progress_pct": 0.0,
+  "calibrated": {
+    "chars_per_block": 0,
+    "chars_per_round": 9000
   },
-  "updated_at": "2026-01-01T00:00:00+08:00",
+  "cursor": {
+    "chapter": 0,
+    "scene": 0
+  },
+  "parts": [
+    { "name": "上册", "max_id": 238 },
+    { "name": "下册", "min_id": 239 }
+  ],
+  "floors": {
+    "main": 700,
+    "sub": 500
+  },
+  "run_lock": {
+    "run_id": "2026-09-14T18:20",
+    "file_prefixes": ["act4_"],
+    "owner": "session-A"
+  },
   "batches": [],
   "checks": {
     "id_continuous": true,
     "time_monotonic": true,
     "fields_complete": true,
-    "degradation": "clean",
-    "deliverable_opens": true
-  }
+    "episode_headers": "0/0",
+    "floors_ok": false,
+    "degradation": "clean"
+  },
+  "updated_at": ""
 }
