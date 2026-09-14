@@ -22,6 +22,7 @@ DESC = """  长文本分批交付协议（LFBD）。用于任何"一次性写不
   scripts/run_state.py 四阶段：GENERATE / AUDIT / REPAIR / DONE；
   gate 返回 0=DONE／1=继续写／2=先修问题，非 0 一律不许停、不许提问。
   配套轮末契约（每轮只许以 DONE 或 RESUME 结尾）与吞吐升级梯（逼单块变长而非块数变多）。
+  并把 N 次接续压成 N/k 次：一个回合内链式连跑 k 块，块与块之间不收尾。
   触发场景：目标字数远超单轮上限；分卷/分册交付；跨多轮续写不丢进度；
   用户抱怨"又没写够""每次都要重新说一遍要求""写完才发现差一大截"。
   English: LFBD — batching/delivery for ultra-long outputs (100k+ CJK chars).
@@ -29,7 +30,8 @@ DESC = """  长文本分批交付协议（LFBD）。用于任何"一次性写不
   through four phases: GENERATE / AUDIT / REPAIR / DONE. Volume is checked by
   several methods (CJK, CJK+punctuation, non-space, built docx); if short, keep
   writing; once met, run all gates; only if everything passes may you stop.
-  gate returns 0=DONE / 1=write more / 2=fix first — never end a turn with a question."""
+  gate returns 0=DONE / 1=write more / 2=fix first — never end a turn with a question.
+  Chaining k chunks inside one turn (no wrap-up between chunks) cuts hand-offs to about 1/k."""
 
 LIMIT = 1024
 
