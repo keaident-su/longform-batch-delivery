@@ -1,21 +1,20 @@
 ---
 name: longform-batch-delivery
-version: 10.0.0
+version: 11.0.0
 description: |
   长文本分批交付协议（LFBD）。用于一次性写不完的超长产出（十几万字的小说/剧本/报告）。
-  v10 核心：先把“跑几轮”算出来，再把“完成”变成退出码——
-  轮数契约 x = ceil(目标 ÷ (单轮上限 × 0.8))；先跑满 x 轮，
-  再用多种口径核字数（汉字/含全角标点/去空白/交付 docx），不够就补；
-  够了才排查（编号/时间/字段/内容一致性），问题全过才允许停。
-  scripts/run_state.py 四阶段 GENERATE/AUDIT/REPAIR/DONE；
-  gate 返回 0=DONE、1=继续写、2=先修问题——非 0 一律不许停、不许提问。
-  回合只在输出无工具调用的消息时结束，所以回合内不得收尾；
-  一回合链式连跑 k 块，把 N 次接续压成 N/k 次；密度优先（汉字/段 ≥ 120）。
-  English: LFBD for ultra-long outputs. Pre-compute x = target ÷ (cap × 0.8), then loop
-  GENERATE / AUDIT / REPAIR / DONE. Check volume by several methods; if short keep writing,
-  once met run all gates, stop only if all pass. gate: 0=DONE / 1=write more / 2=fix first.
-  Never wrap up mid-turn (a turn ends only when a message has no tool call); chain k chunks
-  per turn; density metrics included.
+  v11 最高优先级是 M0《不许停》：在 scripts/run_state.py gate 退出码变成 0 之前，
+  绝不输出任何"不带工具调用"的消息（汇报/总结/提问都会让回合结束、把控制权交回用户，
+  这正是"用了技能还是跑一轮就停"的唯一真因）。gate 0=DONE 才许收尾，1=继续写，2=先修问题，
+  非 0 一律不发非工具消息。先算轮数 x = ceil(目标 ÷ (单轮上限 × 0.8))，
+  再用多种口径核字数（汉字/含全角标点/去空白/交付 docx），不够就接着写，
+  够了才排查（编号/时间/字段/退化/地板/内容一致性），全过才停。一回合链式连跑 k 块，
+  密度优先（汉字/段 ≥ 120）。自查：python _selftest/loop_guard.py
+  English: LFBD for ultra-long outputs. M0 no-stop rule: never emit a message without a
+  tool call until run_state.py gate exits 0. gate 0=DONE / 1=keep writing / 2=fix first.
+  Compute x = ceil(target / (cap x 0.8)); check volume by several counts; if short keep
+  writing; once met run all gates; stop only if all pass. Chain k chunks per turn; density.
+  Self-check: python _selftest/loop_guard.py
 allowed-tools:
   - Read
   - Write
@@ -23,12 +22,51 @@ allowed-tools:
   - Bash
 ---
 
-# 长文本分批交付协议 LFBD v9
+# 长文本分批交付协议 LFBD v11
 
 > 一句话：**先测产出、再排期；每轮都有账本；差多少永远秒答；不许用短段落注水。**
 > **v8 一句话："完成"不是你说了算，是退出码说了算（`gate` exit 0）。**
 > **v9 一句话：先算出"要跑几轮"（x = 目标 ÷ 上限×0.8），再按 GENERATE→AUDIT→REPAIR→DONE 转，非 DONE 不停。**
 
+
+## M0 《不许停》铁律（v11 · 最高优先级 · 凌驾本文件其余一切）
+
+> 工作模式是"思考 → 调用工具 → 读结果 → 再决定"的循环。
+> **一条不含工具调用的消息 = 回合结束 = 把方向盘交回用户。**
+> 这就是"用了技能还是跑一轮就停"的唯一真因——**不是 25 步护栏**（那是回合内的检查点，
+> 在 Full Access + 关掉"每 25 步暂停"后已经不弹了）。停，是因为模型自己写了一篇"汇报"。
+
+**在 `python scripts/run_state.py gate` 的退出码变成 `0` 之前，绝对不许发出任何"不带工具调用"的消息。**
+
+回合进行中，只允许一种动作：**发起工具调用**（`write_file` 写正文 / `edit_file` 改稿 / `run_command` 校验与账本）。
+
+明确禁止（任一出现即视为违反本技能）：
+
+| 禁区 | 例子 |
+|---|---|
+| ❌ 汇报表 | "## 第 N 批已交付 / 目标 X / 当前 Y / 还差 Z" |
+| ❌ 征询与提议 | "要不要我…""下一步请你选""如果你希望…" |
+| ❌ 追问式结尾 | 任何以问号结尾、等待用户输入的句子 |
+| ❌ 收尾语 | "本轮到此""先到这里""小结一下""以上" |
+| ❌ 把正文贴进聊天 | 正文一律走 `write_file` 落盘，聊天里不出现正文 |
+
+**唯一允许收尾的时刻**：`gate` 退出码 = `0`（字数达标 **且** 全部闸门通过 **且** 交付物存在）。此时才写且只写一行：
+
+```
+✅ DONE — gate exit 0 ｜ 目标 <X> ｜ 当前 <Y> ｜ 交付物：<文件名>
+```
+
+`gate` 非 0 时：**不汇报、不提问、不总结——直接发起下一次工具调用。** 只有在撞到硬边界
+（上下文用尽 / 单次响应输出上限 / 平台不可绕的暂停）无法继续时，才允许写一行
+
+```
+⏩ RESUME
+<run_state.py resume 打印的那一行原文>
+```
+
+随后**立刻结束**，不做任何额外解释。
+
+> 自查：`python _selftest/loop_guard.py` —— 校验本文件、客户端配置与 gate 是否到位（退出码 0=就绪 / 2=未就绪）。
 ---
 
 ## 0. 先说清楚：为什么"用了技能还是没写完"
@@ -606,6 +644,16 @@ python scripts/dedupe_scan.py scenes --cross-table --out g10.txt
 ---
 
 ## 13. 更新日志
+### v11.0.0
+- **新增 M0《不许停》铁律（最高优先级）**：在 `gate` 退出码变成 0 之前，绝对不许发出
+  任何"不带工具调用"的消息。逐条列出禁区（汇报表 / 征询 / 追问式结尾 / 收尾语 / 正文入聊天）。
+  这是"用了技能还是跑一轮就停"的直接解药——真因是模型自己收尾，不是 25 步护栏。
+- **澄清 Chatbox 回合模型**：一条不含工具调用的消息 = 回合结束、控制权交回用户；
+  25 步暂停只是回合内的检查点（Full Access + 关掉"每 25 步暂停"后不再弹出）。
+- 新增 `_selftest/loop_guard.py`：一条命令自查技能与客户端配置是否就绪。
+- 新增 `templates/NO_STOP.md`：可直接贴进项目根的"不许停"卡片。
+- frontmatter 版本号 10.0.0 → 11.0.0，description 重写为 M0 口径（净字符 ≤ 950）。
+
 
 ### v9.2.0
 - **新增 §1.8「在 Chatbox Work Mode 下运行」**：核实并引用官方文档——Work Mode 本身就是
