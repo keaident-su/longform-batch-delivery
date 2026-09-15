@@ -216,3 +216,47 @@ _selftest/selftest.py         v8 · stop-predicate regression suite (12 assertio
 ## License
 
 MIT © keaident-su
+
+
+---
+
+## v11.0.0 (latest) · M0 "NO-STOP"
+
+**One line: until `python scripts/run_state.py gate` exits `0`, never emit a message without a tool call.**
+
+Work Mode is a loop: think → call a tool → read the result → decide again. A message with **no tool call ends the
+turn** and hands control back to the user. So the real reason "the skill ran one round and stopped" is **not** the
+25-step pause (that is an in-turn checkpoint, and it is already disabled under Full Access) — it is the model
+writing a summary.
+
+### During a turn, only one action is allowed
+
+✅ Call a tool: `write_file` (prose) / `edit_file` (edits) / `run_command` (checks, ledger).
+
+### Forbidden endings (any one of them breaks the protocol)
+
+| Forbidden | Example |
+|---|---|
+| Progress table | "## Batch N delivered … target / current / remaining" |
+| Soliciting | "Shall I continue?" "Pick one of the following" |
+| Question tail | any sentence ending in "?" that waits for input |
+| Wrap-up | "That's it for this round", "to summarize" |
+| Prose in chat | prose must go to disk via `write_file` |
+
+### The only allowed ending
+
+```
+✅ DONE — gate exit 0 | target <X> | current <Y> | artifacts: <file>
+```
+
+If `gate` is non-zero: **do not report, do not ask, do not summarize — just issue the next tool call.**
+Only on a hard boundary (context exhausted / per-response output cap) write one `⏩ RESUME` line, then stop.
+
+### Self-check
+
+```bash
+python _selftest/loop_guard.py     # exit 0 = ready / 2 = not ready
+```
+
+It verifies: SKILL.md contains M0, `gate exit 0` is the only legal stop, the description is within 1024 chars on
+both measures, and the client's `pauseOnToolCallLimit` is `false`.
