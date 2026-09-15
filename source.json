@@ -1,13 +1,13 @@
 {
   "type": "chat",
   "name": "longform-batch-delivery",
-  "version": "11.0.0",
+  "version": "11.1.0",
   "repo": "https://github.com/keaident-su/longform-batch-delivery",
   "license": "MIT",
   "lang": [
     "zh-CN",
     "en"
   ],
-  "whatsNew": "v11.0.0 adds the M0 \"NO-STOP\" rule: until run_state.py gate exits 0 you must NEVER emit a message without a tool call. Forbidden endings (progress tables, \"shall I continue?\", any question waiting for input, wrap-up phrases, pasting prose into chat) all end the turn and hand control back to the user - that is the real reason \"the skill ran one round and stopped\" (it is NOT the 25-step pause; that is an in-turn checkpoint and is already off under Full Access). New _selftest/loop_guard.py self-check and templates/NO_STOP.md card. gate stays the only legal definition of done: 0=DONE / 1=keep writing / 2=fix first.",
+  "whatsNew": "v11.1.0 adds unattended mode (M0.1): Chatbox has no auto-continue switch, but queued messages are sent automatically when the current reply finishes, so queueing ~20 \"continue\" messages (cap 20) before you sleep gives ~20 auto-resumed rounds; combined with M0 (never end the turn) that yields e.g. 20 x 6 x 1800 ~ 216k chars per night. Ships templates/queue_resume.txt, docs/unattended.zh.md / .en.md, and scripts/overnight_driver.py (a真 zero-human API loop outside the chat, BYOK).",
   "installedAt": "2026-09-14T08:52:02.654Z"
 }
